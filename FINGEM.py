@@ -387,7 +387,7 @@ if simbolo:
         fig.update_yaxes(showgrid=False)
         st.plotly_chart(fig, width='stretch')
 
-        # 📰 NOTICIAS E IA
+# 📰 NOTICIAS E IA
         st.write("---")
         noticias = ticker.news[:3]
         textos_noticias = ""
@@ -399,23 +399,20 @@ if simbolo:
                 except: titular_es = titular
                 textos_noticias += f"- {titular_es}\n"
         
-
-st.subheader("🤖 Análisis Asistido por Inteligencia Artificial")
+        # --- ALINEACIÓN A PARTIR DE AQUÍ (8 ESPACIOS DESDE EL BORDE) ---
+        st.subheader("🤖 Análisis Asistido por Inteligencia Artificial")
         
-        # --- NUEVO: CHECKBOX DE CONTROL DE TELEGRAM ---
-        enviar_telegram = st.checkbox("📤 Enviar copia de este reporte a Telegram (Privado y Grupo)", value=True)
+        enviar_telegram = st.checkbox("📤 Enviar copia de este reporte a Telegram", value=True)
         texto_boton = f"Generar y Enviar Análisis ({temporalidad}) 🚀" if enviar_telegram else f"Generar Análisis Local ({temporalidad}) 🤖"
         
         if st.button(texto_boton):
-            with st.spinner(f'Procesando Análisis Cuantitativo y Evaluando IA...'):
+            with st.spinner('Procesando Análisis Cuantitativo y Evaluando IA...'):
                 try:
-                    # 1. Generamos el análisis siempre
                     analisis_ia = analizar_con_gemini(simbolo, precio_actual, recomendacion_ia, textos_noticias, tipo_mercado, datos_extra, sentimiento_mercado, datos_onchain_ia, ciclo_macro_ia, temporalidad)
                     
                     st.success("Análisis completado:")
                     st.markdown(analisis_ia.replace('$', '\\$'))
                     
-                    # 2. Solo enviamos a Telegram si el checkbox está marcado
                     if enviar_telegram:
                         enviar_alerta_telegram(f"🚀 *REPORTE {temporalidad.upper()}: {simbolo}*\n\n{analisis_ia}")
                         
