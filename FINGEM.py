@@ -24,22 +24,29 @@ ETHERSCAN_API_KEY = st.secrets["ETHERSCAN_API_KEY"]
 def enviar_alerta_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     fragmentos = [mensaje[i:i+4000] for i in range(0, len(mensaje), 4000)]
-    envio_exitoso = True
-    for fragmento in fragmentos:
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": fragmento, "parse_mode": "Markdown"}
-        try:
-            respuesta = requests.post(url, json=payload)
-            if respuesta.status_code != 200:
-                payload_seguro = {"chat_id": TELEGRAM_CHAT_ID, "text": fragmento}
-                resp_segura = requests.post(url, json=payload_seguro)
-                if resp_segura.status_code != 200:
-                    envio_exitoso = False
-                    st.error(f"❌ Error Telegram: {resp_segura.text}")
-        except Exception as e:
-            envio_exitoso = False
-            st.error(f"❌ Error de conexión: {e}")
-    if envio_exitoso:
-        st.toast("✅ ¡Análisis enviado a Telegram!")
+    
+    # 🎯 AQUÍ ESTÁ LA MAGIA: Lista de destinos
+    # Reemplaza el número negativo por el ID real de tu grupo
+    destinos = [TELEGRAM_CHAT_ID, "-1003711355206"] 
+    
+    envios_exitosos = 0
+    for chat_destino in destinos:
+        for fragmento in fragmentos:
+            payload = {"chat_id": chat_destino, "text": fragmento, "parse_mode": "Markdown"}
+            try:
+                respuesta = requests.post(url, json=payload)
+                if respuesta.status_code != 200:
+                    payload_seguro = {"chat_id": chat_destino, "text": fragmento}
+                    resp_segura = requests.post(url, json=payload_seguro)
+                    if resp_segura.status_code != 200:
+                        st.error(f"❌ Error Telegram ({chat_destino}): {resp_segura.text}")
+                else:
+                    envios_exitosos += 1
+            except Exception as e:
+                st.error(f"❌ Error de conexión al enviar a {chat_destino}: {e}")
+                
+    if envios_exitosos > 0:
+        st.toast("✅ ¡Análisis enviado a Telegram (Privado y Grupo)!")
 
 def obtener_sentimiento_macro():
     try:
