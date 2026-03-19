@@ -399,15 +399,25 @@ if simbolo:
                 except: titular_es = titular
                 textos_noticias += f"- {titular_es}\n"
         
-    st.subheader("🤖 Análisis Asistido por Inteligencia Artificial")
-    if st.button(f"Generar Análisis Híbrido ({temporalidad}) y Enviar a Telegram 🚀"):
+
+st.subheader("🤖 Análisis Asistido por Inteligencia Artificial")
+        
+        # --- NUEVO: CHECKBOX DE CONTROL DE TELEGRAM ---
+        enviar_telegram = st.checkbox("📤 Enviar copia de este reporte a Telegram (Privado y Grupo)", value=True)
+        texto_boton = f"Generar y Enviar Análisis ({temporalidad}) 🚀" if enviar_telegram else f"Generar Análisis Local ({temporalidad}) 🤖"
+        
+        if st.button(texto_boton):
             with st.spinner(f'Procesando Análisis Cuantitativo y Evaluando IA...'):
                 try:
-                    # AQUÍ ESTÁ EL CAMBIO: Agregamos la variable 'temporalidad' al final de esta línea 👇
+                    # 1. Generamos el análisis siempre
                     analisis_ia = analizar_con_gemini(simbolo, precio_actual, recomendacion_ia, textos_noticias, tipo_mercado, datos_extra, sentimiento_mercado, datos_onchain_ia, ciclo_macro_ia, temporalidad)
                     
                     st.success("Análisis completado:")
                     st.markdown(analisis_ia.replace('$', '\\$'))
-                    enviar_alerta_telegram(f"🚀 *REPORTE {temporalidad.upper()}: {simbolo}*\n\n{analisis_ia}")
+                    
+                    # 2. Solo enviamos a Telegram si el checkbox está marcado
+                    if enviar_telegram:
+                        enviar_alerta_telegram(f"🚀 *REPORTE {temporalidad.upper()}: {simbolo}*\n\n{analisis_ia}")
+                        
                 except Exception as e:
                     st.error(f"Error con la IA: {e}")
