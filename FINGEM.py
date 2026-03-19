@@ -378,7 +378,7 @@ if simbolo:
         fig.update_layout(template="plotly_dark", paper_bgcolor="#131722", plot_bgcolor="#131722", xaxis_rangeslider_visible=False, height=650, margin=dict(l=10, r=10, t=30, b=10), showlegend=False)
         fig.update_xaxes(range=[fecha_inicio, fecha_fin], showgrid=False)                
         fig.update_yaxes(showgrid=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         # 📰 NOTICIAS E IA
         st.write("---")
@@ -400,7 +400,7 @@ if simbolo:
                     analisis_ia = analizar_con_gemini(simbolo, precio_actual, recomendacion_ia, textos_noticias, tipo_mercado, datos_extra, sentimiento_mercado, datos_onchain_ia, ciclo_macro_ia, temporalidad)
                     
                     st.success("Análisis completado:")
-                    st.markdown(analisis_ia.replace('$', '\$'))
+                    st.markdown(analisis_ia.replace('$', '\\$'))
                     enviar_alerta_telegram(f"🚀 *REPORTE {temporalidad.upper()}: {simbolo}*\n\n{analisis_ia}")
                 except Exception as e:
                     st.error(f"Error con la IA: {e}")
