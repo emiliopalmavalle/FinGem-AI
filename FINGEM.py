@@ -302,16 +302,41 @@ if simbolo:
             col4.metric("🌐 Sentimiento Macro", sentimiento_mercado)
             
             # --- RENDERIZAR BANNER DEL RELOJ DEL CICLO ---
-            semanas_h, fase_h, color_h = calcular_fase_ciclo()
-            ciclo_macro_ia = f"Semana {semanas_h} post-halving. Fase: {fase_h}."
+        semanas_h, fase_h, color_h = calcular_fase_ciclo()
+        ciclo_macro_ia = f"Semana {semanas_h} post-halving. Fase: {fase_h}."
+
+        # Guardamos tu diseño original en una variable para no repetir código
+        banner_original = f"""
+        <div style="padding: 15px; border-radius: 5px; background-color: rgba(255, 255, 255, 0.05); border-left: 5px solid {'#F23645'}">
+            <h4 style="margin:0; padding:0;">{color_h} Reloj del Ciclo Halving (Semana +{semanas_h}w)</h4>
+            <p style="margin:5px 0 0 0; font-size:14px; opacity:0.8;"><b>Fase Actual:</b> {fase_h}</p>
+        </div>
+        <br>
+        """
+
+        # 🔮 MODO DEMO: División de columnas solo en Semanal
+        if temporalidad == "Semanal" and "BTC" in simbolo:
+            col_reloj, col_leyenda = st.columns([1.5, 1]) # 60% para el Reloj, 40% para la Leyenda
             
-            st.markdown(f"""
-            <div style="padding: 15px; border-radius: 5px; background-color: rgba(255, 255, 255, 0.05); border-left: 5px solid {'#F23645' if 'Distribución' in fase_h else '#089981' if 'Markup' in fase_h else '#FFD700'};">
-                <h4 style="margin:0; padding:0;">{color_h} Reloj del Ciclo Halving (Semana +{semanas_h}w)</h4>
-                <p style="margin:5px 0 0 0; font-size:14px; opacity:0.8;"><b>Fase Actual:</b> {fase_h}</p>
-            </div>
-            <br>
-            """, unsafe_allow_html=True)
+            with col_reloj:
+                st.markdown(banner_original, unsafe_allow_html=True)
+                
+            with col_leyenda:
+                # El cuadro de la leyenda ocupando el "área amarilla"
+                st.markdown("""
+                <div style="padding: 10px; border-radius: 5px; background-color: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255,255,255,0.1); margin-top: 2px;">
+                    <div style="font-size: 13px; display: flex; flex-direction: column; gap: 4px;">
+                        <div><span style="color: #FF9800; font-weight: bold;">——</span> Halving (0w)</div>
+                        <div><span style="color: #089981; font-weight: bold;">——</span> Profit Start (+40w)</div>
+                        <div><span style="color: #F23645; font-weight: bold;">——</span> Profit End (+77w)</div>
+                        <div><span style="color: #FFD700; font-weight: bold;">——</span> DCA Start (+135w)</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+        else:
+            # Si estamos en Diario, 4H o viendo otra moneda, se muestra normal sin la leyenda
+            st.markdown(banner_original, unsafe_allow_html=True)
 
             if datos_escaner and datos_escaner.get("exito"):
                 st.success("✅ **Escáner On-Chain Completado (Último Bloque BTC)**")
