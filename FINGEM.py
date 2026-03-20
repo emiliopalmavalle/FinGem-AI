@@ -350,8 +350,8 @@ if simbolo:
                 elif red_onchain == "Ethereum (ETH)": resultado_ballena = rastrear_ballena_eth(direccion_ballena)
                 st.info(f"**Billetera Monitoreada:** `{direccion_ballena}` \n\n {resultado_ballena}")
                 datos_onchain_ia += f"Billetera vigilada: {direccion_ballena}. Estado: {resultado_ballena}."
-        else:
-            col4.metric("📊 Mercado", "Renta Variable")
+            else:
+               col4.metric("📊 Mercado", "Renta Variable")
 
         st.write(f"**T. Latino:** ADX {adx_actual:.2f} ({pendiente_adx}) | EMA 55: ${ema_55:,.2f}")
         st.write(f"**SMC Liquidez (FVG):** Imbalance Alc: `{fvg_bullish}` | Imbalance Baj: `{fvg_bearish}`")
