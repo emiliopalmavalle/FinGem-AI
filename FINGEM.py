@@ -11,7 +11,8 @@ from deep_translator import GoogleTranslator
 from modules.radar_acciones import escaneo_institucional_dual
 from modules.radar_derivados import escanear_flujo_institucional
 from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_radar, escanear_calls_baratos
-from modules.gemini_client import llamar_gemini, mostrar_estado_gemini_sidebar
+from modules.ai_client import configurar_ia, llamar_ia, mostrar_estado_ia_sidebar
+from modules.auth import requerir_login, mostrar_usuario_sidebar
 from modules.motor_grafico import construir_grafico_tecnico
 from modules.procesador_datos import procesar_datos_tecnicos, descargar_historia
 
@@ -24,7 +25,11 @@ TELEGRAM_TOKEN    = st.secrets.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID  = st.secrets.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_GROUP_ID = st.secrets.get("TELEGRAM_GROUP_ID", "")
 GEMINI_API_KEY    = st.secrets.get("GEMINI_API_KEY", "")
+ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
 ETHERSCAN_API_KEY = st.secrets.get("ETHERSCAN_API_KEY", "")
+
+# Cliente IA multi-proveedor: Claude principal → Gemini respaldo → reporte local
+configurar_ia(claude_api_key=ANTHROPIC_API_KEY, gemini_api_key=GEMINI_API_KEY)
 
 # ==========================================
 # 🤖 IA: ANÁLISIS TÉCNICO CON GEMINI
@@ -51,8 +56,8 @@ def analizar_con_gemini(
       · Contexto on-chain, sentimiento, ciclo halving y noticias
       · Pasa por llamar_gemini() para retry, caché y fallback automáticos
     """
-    if not GEMINI_API_KEY:
-        return "❌ Error: Falta la API Key de Gemini en tus secrets.toml"
+    if not ANTHROPIC_API_KEY and not GEMINI_API_KEY:
+        return "❌ Error: No hay API keys de IA en tus secrets (ANTHROPIC_API_KEY / GEMINI_API_KEY)."
 
     # ── BOLSA (NY / MX)
     if "NY" in tipo_mercado or "MX" in tipo_mercado or "Análisis Individual" in tipo_mercado:
@@ -112,7 +117,7 @@ def analizar_con_gemini(
         "precio": precio_actual,
         "razones": [datos_extra[:80]] if datos_extra else [],
     }
-    return llamar_gemini(prompt, GEMINI_API_KEY, contexto_fallback=ctx)
+    return llamar_ia(prompt, contexto_fallback=ctx)
 
 
 # ==========================================
@@ -317,10 +322,15 @@ def escanear_anomalias_btc() -> dict:
 # 🖥️ INTERFAZ STREAMLIT
 # ==========================================
 st.set_page_config(page_title="Terminal Financiero AI", page_icon="📈", layout="wide")
+
+# 🔐 Llave de entrada: nada se renderiza sin autenticación
+requerir_login()
+
 st.title("📊 Terminal de Inteligencia Financiera")
 
 st.sidebar.header("Panel de Control")
-mostrar_estado_gemini_sidebar()
+mostrar_usuario_sidebar()
+mostrar_estado_ia_sidebar()
 tipo_mercado = st.sidebar.radio(
     "Selecciona el Módulo:",
     [
@@ -767,10 +777,7 @@ elif tipo_mercado == "🧱 Flujo de Opciones (Derivados)" and simbolo:
 
     if st.button(f"🕵️‍♂️ Extraer Flujo Institucional para {simbolo}", type="primary"):
         with st.spinner(f"Escaneando 4 horizontes temporales y procesando IA Quant..."):
-            # ✅ Pasamos GEMINI_API_KEY como parámetro (no más st.secrets en el módulo)
-            df_muros, reporte_ia, fig_visual = escanear_flujo_institucional(
-                simbolo, gemini_api_key=GEMINI_API_KEY
-            )
+            df_muros, reporte_ia, fig_visual = escanear_flujo_institucional(simbolo)
 
         if fig_visual is not None:
             st.plotly_chart(fig_visual, width="stretch", config={'displayModeBar': False})
@@ -863,7 +870,6 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
             prog.progress(15, text="Descargando cadenas de opciones...")
             df_quant, df_swing, fig_gamma, reporte_ia, raw, contexto_macro = ejecutar_radar_opciones(
                 lista_radar,
-                gemini_api_key=GEMINI_API_KEY,
                 umbral_senal=umbral_radar,
             )
             prog.progress(100, text="Análisis completado.")

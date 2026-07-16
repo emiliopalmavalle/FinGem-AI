@@ -51,7 +51,7 @@ from datetime import datetime
 from math import log, sqrt, erf
 import concurrent.futures
 import warnings
-from modules.gemini_client import llamar_gemini
+from modules.ai_client import llamar_ia
 
 warnings.filterwarnings("ignore")
 
@@ -769,10 +769,8 @@ def construir_grafico_radar(resultado_ticker: dict) -> go.Figure | None:
 # ══════════════════════════════════════════════════════
 
 def _generar_reporte_ia(ticker, precio, scores_quant, swing_scan, contexto_macro,
-                         muros_scalp, muros_swing, muros_macro, api_key="") -> str:
-    """Genera el prompt enriquecido para Gemini con todos los datos técnicos."""
-    if not api_key:
-        return "❌ API Key de Gemini no configurada."
+                         muros_scalp, muros_swing, muros_macro) -> str:
+    """Genera el prompt enriquecido para la IA con todos los datos técnicos."""
 
     def _fm(muros):
         if not muros: return "Sin muros relevantes."
@@ -892,23 +890,23 @@ Maximo 450 palabras. Niveles numericos exactos. Sin frases genericas.
         "pcr":    scores_quant.get("scalping", {}).get("pcr", 1.0) if scores_quant.get("scalping") else 1.0,
         "iv_avg": scores_quant.get("scalping", {}).get("iv_avg", 30) if scores_quant.get("scalping") else 30,
     }
-    return llamar_gemini(prompt, api_key, contexto_fallback=ctx_fallback)
+    return llamar_ia(prompt, contexto_fallback=ctx_fallback)
 
 
 # ══════════════════════════════════════════════════════
 # FUNCIÓN PRINCIPAL PÚBLICA
 # ══════════════════════════════════════════════════════
 
-def ejecutar_radar_opciones(lista_tickers: list, gemini_api_key: str = "",
+def ejecutar_radar_opciones(lista_tickers: list,
                             umbral_senal: int = UMBRAL_SENAL) -> tuple:
     """Punto de entrada principal del radar.
 
     Orquesta el pipeline completo: contexto macro → descarga batch →
-    análisis paralelo (Capa 1 + Capa 2) → tablas → gráfico → reporte IA.
+    análisis paralelo (Capa 1 + Capa 2) → tablas → gráfico → reporte IA
+    (multi-proveedor: Claude → Gemini → local).
 
     Args:
         lista_tickers: lista de símbolos a escanear.
-        gemini_api_key: API key de Gemini para el reporte IA.
         umbral_senal: score mínimo (0-100) para disparar BUY CALL/PUT;
                       score >= umbral-10 genera señal LEAN (casi dispara).
 
@@ -952,7 +950,6 @@ def ejecutar_radar_opciones(lista_tickers: list, gemini_api_key: str = "",
             ticker=lider["ticker"], precio=lider["precio"],
             scores_quant=sq, swing_scan=sc, contexto_macro=contexto,
             muros_scalp=_m("scalping"), muros_swing=_m("swing"), muros_macro=_m("posicional"),
-            api_key=gemini_api_key,
         )
 
     raw = {r["ticker"]: r for r in resultados}

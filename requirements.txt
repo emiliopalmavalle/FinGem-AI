@@ -7,3 +7,4 @@ google-genai>=1.0
 deep-translator>=1.11
 plotly>=5.24
 numba>=0.60
+anthropic>=0.100

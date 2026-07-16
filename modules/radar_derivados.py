@@ -1,7 +1,7 @@
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
-from modules.gemini_client import llamar_gemini
+from modules.ai_client import llamar_ia
 import plotly.graph_objects as go
 from typing import Optional
 
@@ -9,9 +9,8 @@ from typing import Optional
 # ==========================================
 # 🤖 ANÁLISIS IA — DESACOPLADO DE STREAMLIT
 # ==========================================
-# Antes: GEMINI_API_KEY = st.secrets.get(...)  ← acoplado a Streamlit
-# Ahora: api_key se pasa como parámetro ← testeable, reutilizable
-# El orquestador (fingem.py) es el único que conoce los secrets.
+# Usa el cliente multi-proveedor (Claude → Gemini → local).
+# Las API keys las configura el orquestador vía configurar_ia().
 # ==========================================
 
 def analizar_muros_con_ia(
@@ -19,10 +18,9 @@ def analizar_muros_con_ia(
     precio: float,
     tabla_datos: str,
     pcr_global: float,
-    api_key: str = "",
 ) -> str:
     """
-    Genera el reporte IA de flujo institucional usando Gemini.
+    Genera el reporte IA de flujo institucional.
 
     Parámetros
     ----------
@@ -30,11 +28,7 @@ def analizar_muros_con_ia(
     precio      : precio spot actual
     tabla_datos : string con la tabla de muros (DataFrame.to_string)
     pcr_global  : Put/Call Ratio calculado del batch
-    api_key     : Gemini API Key, inyectada desde el orquestador
     """
-    if not api_key:
-        return "❌ Error: API Key de Gemini no configurada. Revisa tus secrets."
-
     prompt = f"""
     Actúa como un Quant Institucional.
     Analiza la liquidez para {ticker}. Precio actual Spot: USD {precio:.2f}.
@@ -51,7 +45,7 @@ def analizar_muros_con_ia(
     """
 
     ctx = {"ticker": ticker, "precio": precio}
-    return llamar_gemini(prompt, api_key, contexto_fallback=ctx)
+    return llamar_ia(prompt, contexto_fallback=ctx)
 
 
 # ==========================================
@@ -131,13 +125,12 @@ def construir_grafico_opciones(
 
 def escanear_flujo_institucional(
     ticker_symbol: str,
-    gemini_api_key: str = "",
 ) -> tuple[pd.DataFrame, str, Optional[go.Figure]]:
     """
     Escanea el flujo institucional de opciones para un activo.
 
     Cambios vs versión anterior:
-    - gemini_api_key se inyecta como parámetro (no más st.secrets aquí)
+    - IA vía cliente multi-proveedor (Claude → Gemini → local)
     - fillna(0) reemplazado por .fillna(0) con asignación explícita
     - Protección ante cadenas vacías en bucle de horizontes
     - Manejo de error más granular (no silencia todo con un except genérico)
@@ -241,10 +234,10 @@ def escanear_flujo_institucional(
 
         df_final = pd.DataFrame(muros_detectados)
 
-        # Análisis IA (con api_key inyectada, no desde st.secrets)
+        # Análisis IA (multi-proveedor: Claude → Gemini → local)
         tabla_str = df_final.to_string(index=False) if not df_final.empty else "Sin muros detectados."
         reporte_ia = analizar_muros_con_ia(
-            ticker_symbol, precio_spot, tabla_str, pcr_global, api_key=gemini_api_key
+            ticker_symbol, precio_spot, tabla_str, pcr_global
         )
 
         return df_final, reporte_ia, fig_visual
