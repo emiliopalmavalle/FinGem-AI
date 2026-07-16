@@ -371,7 +371,10 @@ if tipo_mercado == "📈 Análisis Individual (NY / MX)":
         }
         simbolo = opciones_mx.get(st.sidebar.selectbox("Empresa:", list(opciones_mx.keys())), "")
     else:
-        simbolo = st.sidebar.text_input("Símbolo:", "AMD").upper()
+        simbolo = st.sidebar.text_input(
+            "Símbolo:", "AMD",
+            help="Formato exacto de Yahoo Finance: AAPL (NY), BIMBOA.MX (BMV con sufijo .MX), BTC-USD (cripto).",
+        ).upper()
     # select_slider en vez de selectbox: el dropdown se cortaba al
     # quedar al fondo del sidebar sin posibilidad de scroll
     temporalidad = st.sidebar.select_slider(
@@ -761,7 +764,13 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                 enviar_alerta_telegram(analisis)
 
     else:
-        st.error(f"No se pudieron descargar datos para **{simbolo}**. Verifica que el ticker sea correcto.")
+        st.error(
+            f"No se pudieron descargar datos para **{simbolo}**. Posibles causas:\n\n"
+            f"1. **Símbolo incorrecto** — usa el formato exacto de Yahoo Finance: "
+            f"`AAPL` (NY), `BIMBOA.MX` / `WALMEX.MX` (BMV, con sufijo .MX), `BTC-USD` (cripto).\n"
+            f"2. **Yahoo limitó las peticiones** temporalmente — espera 1-2 minutos y reintenta.\n\n"
+            f"💡 Busca el símbolo exacto en [finance.yahoo.com](https://finance.yahoo.com)."
+        )
 
 
 # ==========================================

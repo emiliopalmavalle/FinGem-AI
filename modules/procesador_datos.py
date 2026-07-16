@@ -82,8 +82,14 @@ def descargar_historia(simbolo: str, periodo: str, intervalo: str) -> pd.DataFra
     son instantáneos: no vuelven a llamar a Yahoo Finance.
     """
     import yfinance as yf
-    ticker = yf.Ticker(simbolo)
-    return ticker.history(period=periodo, interval=intervalo)
+    try:
+        ticker = yf.Ticker(simbolo)
+        return ticker.history(period=periodo, interval=intervalo)
+    except Exception:
+        # Símbolo inexistente o rate limit de Yahoo: DataFrame vacío,
+        # la UI muestra un mensaje amable. TTL 5 min evita cachear el
+        # fallo temporal por mucho tiempo.
+        return pd.DataFrame()
 
 
 def _calcular_heikin_ashi(hist: pd.DataFrame) -> pd.DataFrame:
