@@ -1,0 +1,16 @@
+# Secrets — nunca subir credenciales
+.streamlit/secrets.toml
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE / SO
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

@@ -1,445 +1,945 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import ta
 import requests
 import datetime
-from google import genai
 from deep_translator import GoogleTranslator
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+
+# ==========================================
+# 📦 IMPORTACIÓN DE MÓDULOS (ARQUITECTURA)
+# ==========================================
+from modules.radar_acciones import escaneo_institucional_dual
+from modules.radar_derivados import escanear_flujo_institucional
+from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_radar
+from modules.gemini_client import llamar_gemini, mostrar_estado_gemini_sidebar
+from modules.motor_grafico import construir_grafico_tecnico
+from modules.procesador_datos import procesar_datos_tecnicos, descargar_historia
 
 # ==========================================
 # 🔐 CONFIGURACIÓN DE CREDENCIALES (SECRETS)
+# Centralizado aquí: ningún módulo accede a
+# st.secrets directamente (arquitectura limpia).
 # ==========================================
-# st.secrets lee de .streamlit/secrets.toml
-TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
-GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-ETHERSCAN_API_KEY = st.secrets["ETHERSCAN_API_KEY"]
-
-# ==========================================
-# 🛠️ FUNCIONES AUXILIARES (TELEGRAM, MACRO Y ON-CHAIN)
-# ==========================================
-def enviar_alerta_telegram(mensaje):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    fragmentos = [mensaje[i:i+4000] for i in range(0, len(mensaje), 4000)]
-    
-    # 🎯 AQUÍ ESTÁ LA MAGIA: Lista de destinos
-    # Reemplaza el número negativo por el ID real de tu grupo
-    destinos = [TELEGRAM_CHAT_ID, "-1003711355206"] 
-    
-    envios_exitosos = 0
-    for chat_destino in destinos:
-        for fragmento in fragmentos:
-            payload = {"chat_id": chat_destino, "text": fragmento, "parse_mode": "Markdown"}
-            try:
-                respuesta = requests.post(url, json=payload)
-                if respuesta.status_code != 200:
-                    payload_seguro = {"chat_id": chat_destino, "text": fragmento}
-                    resp_segura = requests.post(url, json=payload_seguro)
-                    if resp_segura.status_code != 200:
-                        st.error(f"❌ Error Telegram ({chat_destino}): {resp_segura.text}")
-                else:
-                    envios_exitosos += 1
-            except Exception as e:
-                st.error(f"❌ Error de conexión al enviar a {chat_destino}: {e}")
-                
-    if envios_exitosos > 0:
-        st.toast("✅ ¡Análisis enviado a Telegram (Privado y Grupo)!")
-
-def obtener_sentimiento_macro():
-    try:
-        url = "https://api.alternative.me/fng/"
-        respuesta = requests.get(url, timeout=5)
-        datos = respuesta.json()
-        valor = datos['data'][0]['value']
-        clasificacion = datos['data'][0]['value_classification']
-        return f"{valor}/100 ({clasificacion})"
-    except:
-        return "Desconocido"
-
-# --- NUEVO: RELOJ DEL CICLO DEL HALVING ---
-def calcular_fase_ciclo():
-    """Calcula las semanas desde el último Halving y determina la fase macro"""
-    fecha_halving = datetime.datetime(2024, 4, 19)
-    hoy = datetime.datetime.now()
-    dias_transcurridos = (hoy - fecha_halving).days
-    semanas = int(dias_transcurridos / 7)
-    
-    # Lógica basada en el mapa de tiempo institucional
-    if semanas < 40:
-        fase = "Post-Halving (Acumulación temprana / Choque de oferta)"
-        color = "🔵"
-    elif 40 <= semanas < 77:
-        fase = "Markup Parabólico (Profit START) - Tendencia Alcista Fuerte"
-        color = "🟢"
-    elif 77 <= semanas < 135:
-        fase = "Distribución / Corrección (Last Call PROFIT END superado) - Mercado Bajista"
-        color = "🔴"
-    else:
-        fase = "DCA START (Suelo del Mercado / Fase de Acumulación Pre-Halving)"
-        color = "🟡"
-        
-    return semanas, fase, color
-
-# --- RASTREO Y PERFILADO DE BALLENAS ---
-def rastrear_ballena_btc(direccion_btc):
-    url_stats = f"https://mempool.space/api/address/{direccion_btc}"
-    url_txs = f"https://mempool.space/api/address/{direccion_btc}/txs"
-    try:
-        resp_stats = requests.get(url_stats, timeout=5)
-        if resp_stats.status_code != 200: return "Error consultando mempool.space"
-        datos = resp_stats.json()
-        stats = datos['chain_stats']
-        balance_btc = (stats['funded_txo_sum'] - stats['spent_txo_sum']) / 100000000
-        tx_entradas = stats['funded_txo_count']
-        tx_salidas = stats['spent_txo_count']
-        total_txs = tx_entradas + tx_salidas
-        
-        resp_txs = requests.get(url_txs, timeout=5)
-        historial = resp_txs.json() if resp_txs.status_code == 200 else []
-        fecha_ultima_tx = "Desconocida"
-        if historial and 'block_time' in historial[0]:
-            fecha_ultima_tx = datetime.datetime.fromtimestamp(historial[0]['block_time']).strftime('%Y-%m-%d %H:%M')
-
-        perfil = "Indeterminado"
-        if total_txs < 5: perfil = "Billetera Nueva / Posible Exchange Interno (Baja Fiabilidad)"
-        elif tx_salidas == 0 and tx_entradas > 5: perfil = "Diamond Hands / Acumulador Institucional (No vende)"
-        elif tx_salidas > 0 and tx_entradas > 50: perfil = "Trader Activo / Fondo de Inversión (Alta Fiabilidad)"
-            
-        return f"💰 **Balance:** {balance_btc:,.2f} BTC\n\n📊 **Perfil Smart Money:** {perfil}\n\n🔄 **Transacciones:** {total_txs} (Entradas: {tx_entradas} | Salidas: {tx_salidas})\n\n⏱️ **Último Movimiento:** {fecha_ultima_tx}"
-    except Exception as e:
-        return f"Error: {e}"
-
-def rastrear_ballena_eth(direccion_eth):
-    url = f"https://api.etherscan.io/api?module=account&action=balance&address={direccion_eth}&tag=latest&apikey={ETHERSCAN_API_KEY}"
-    try:
-        respuesta = requests.get(url, timeout=5)
-        datos = respuesta.json()
-        if datos['status'] == '1':
-            balance_eth = int(datos['result']) / 1000000000000000000
-            return f"💰 **Balance:** {balance_eth:,.2f} ETH"
-        return f"Error Etherscan: {datos['message']}"
-    except Exception as e:
-        return f"Error: {e}"
-
-def escanear_anomalias_btc():
-    try:
-        hash_url = "https://mempool.space/api/blocks/tip/hash"
-        block_hash = requests.get(hash_url, timeout=5).text
-        txs_url = f"https://mempool.space/api/block/{block_hash}/txs"
-        txs = requests.get(txs_url, timeout=10).json()
-
-        miner_tx = txs[0]
-        recompensa_minero = sum(out.get('value', 0) for out in miner_tx.get('vout', [])) / 100000000
-
-        max_volumen = 0
-        ballena_tx_id = ""
-        for tx in txs[1:]:
-            volumen_sats = sum(out.get('value', 0) for out in tx.get('vout', []))
-            if volumen_sats > max_volumen:
-                max_volumen = volumen_sats
-                ballena_tx_id = tx['txid']
-
-        return {"exito": True, "bloque_hash": block_hash[:10] + "...", "recompensa_minero": recompensa_minero, "ballena_tx": ballena_tx_id, "volumen_ballena": max_volumen / 100000000}
-    except Exception as e:
-        return {"exito": False, "error": str(e)}
+TELEGRAM_TOKEN    = st.secrets.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID  = st.secrets.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_GROUP_ID = st.secrets.get("TELEGRAM_GROUP_ID", "")
+GEMINI_API_KEY    = st.secrets.get("GEMINI_API_KEY", "")
+ETHERSCAN_API_KEY = st.secrets.get("ETHERSCAN_API_KEY", "")
 
 # ==========================================
-# 🧠 CEREBRO DE INTELIGENCIA ARTIFICIAL (GEMINI)
+# 🤖 IA: ANÁLISIS TÉCNICO CON GEMINI
+# Función que antes faltaba y causaba NameError.
+# Centralizada aquí para reutilizar en cualquier
+# módulo de la terminal sin acoplar st.secrets.
 # ==========================================
-def analizar_con_gemini(simbolo, precio, recomendacion, textos_noticias, mercado, datos_extra="", sentimiento="", datos_onchain="", ciclo_macro="", temporalidad=""):
-    if mercado == "📈 Bolsa (NY / MX)":
+def analizar_con_gemini(
+    simbolo: str,
+    precio_actual: float,
+    recomendacion: str,
+    textos_noticias: str,
+    tipo_mercado: str,
+    datos_extra: str = "",
+    sentimiento: str = "",
+    datos_onchain: str = "",
+    ciclo_macro: str = "",
+    temporalidad: str = "Diario",
+) -> str:
+    """
+    Cerebro IA completo — restaurado del cerebro viejo con toda su riqueza:
+      · Prompt separado por mercado (Bolsa vs Cripto)
+      · Lógica dinámica por temporalidad (Macro vs Micro)
+      · Contexto on-chain, sentimiento, ciclo halving y noticias
+      · Pasa por llamar_gemini() para retry, caché y fallback automáticos
+    """
+    if not GEMINI_API_KEY:
+        return "❌ Error: Falta la API Key de Gemini en tus secrets.toml"
+
+    # ── BOLSA (NY / MX)
+    if "NY" in tipo_mercado or "MX" in tipo_mercado or "Análisis Individual" in tipo_mercado:
         prompt = f"""
         Eres un analista financiero institucional. Analiza la acción: {simbolo}.
-        - Precio actual: ${precio:.2f}
+        - Precio actual: USD {precio_actual:.2f}
         - Datos Técnicos y Fundamentales: {datos_extra}
         - Consenso de analistas: {recomendacion}
-        - Noticias: {textos_noticias}
-        Genera un resumen ejecutivo en 3 puntos: 1. Acción del Precio. 2. Valoración Fundamental. 3. Veredicto Institucional.
+        - Noticias recientes: {textos_noticias}
+
+        Genera un resumen ejecutivo en 3 puntos:
+        1. ⚙️ Acción del Precio: estructura técnica actual (EMAs, ADX, FVG).
+        2. 📊 Valoración Fundamental: contexto del consenso y noticias.
+        3. 💡 Veredicto Institucional: sesgo, entrada sugerida, Stop Loss y Take Profit con niveles USD exactos.
+
+        REGLA: Usa 'USD' en lugar del símbolo dólar. Directo y sin frases genéricas.
         """
+
+    # ── CRIPTO — lógica dinámica Macro vs Micro
     else:
-        # LÓGICA DINÁMICA: Separar Macro de Micro
         if temporalidad in ["Semanal", "Mensual"]:
-            bloque_ciclo = f"- RELOJ DEL CICLO MACRO: {ciclo_macro}"
-            regla_ciclo = '1. Contexto Cíclico: El "Reloj del Ciclo Macro" es tu brújula principal. Analiza la fase del Halving a largo plazo.'
-            punto_1 = "1. 🕰️ Análisis del Ciclo Macro y Huella Institucional (Cruza el tiempo del Halving con el gráfico técnico)."
+            # Temporalidad alta: el ciclo del halving es la brújula principal
+            bloque_ciclo = f"- RELOJ DEL CICLO MACRO: {ciclo_macro}" if ciclo_macro else ""
+            regla_ciclo  = '1. Contexto Cíclico: El "Reloj del Ciclo Macro" es tu brújula principal. Cruza la fase del Halving con el gráfico técnico.'
+            punto_1      = "1. 🕰️ Análisis del Ciclo Macro y Huella Institucional (Halving + técnico)."
         else:
+            # Temporalidad baja: ignorar ciclos de 4 años, enfocarse en liquidez inmediata
             bloque_ciclo = ""
-            regla_ciclo = f'1. Contexto de Corto/Medio Plazo: Enfócate ESTRICTAMENTE en la acción del precio actual en {temporalidad}. IGNORA los ciclos macro de 4 años, enfócate en la liquidez inmediata.'
-            punto_1 = f"1. ⚙️ Acción del Precio y Huella Institucional en {temporalidad}."
+            regla_ciclo  = f'1. Contexto de Corto/Medio Plazo: Enfócate ESTRICTAMENTE en la acción del precio en {temporalidad}. IGNORA los ciclos macro de 4 años — enfócate en la liquidez inmediata y los FVG activos.'
+            punto_1      = f"1. ⚙️ Acción del Precio y Huella Institucional en {temporalidad}."
 
         prompt = f"""
         Eres un Analista Quant Senior de Criptomonedas. Tu especialidad es cruzar datos On-Chain y Análisis Técnico (T. Latino y SMC).
         Analiza el activo {simbolo} en temporalidad de {temporalidad}:
-        - Precio actual: ${precio:.2f}
+        - Precio actual: USD {precio_actual:.2f}
         {bloque_ciclo}
-        - Sentimiento Retail (Fear & Greed): {sentimiento}
-        - Actividad On-Chain (Escáner/Perfilado): {datos_onchain}
-        - Datos Técnicos (EMA 55/200, ADX, Monitor, FVG): {datos_extra}
-        - Noticias recientes: {textos_noticias}
+        - Sentimiento Retail (Fear & Greed): {sentimiento if sentimiento else "No disponible"}
+        - Actividad On-Chain (Escáner/Perfilado de Ballenas): {datos_onchain if datos_onchain else "Sin datos on-chain en esta sesión"}
+        - Datos Técnicos (EMA 10/55/200, ADX, Monitor MACD, FVG): {datos_extra}
+        - Noticias recientes: {textos_noticias if textos_noticias else "Sin noticias disponibles"}
 
         Reglas de análisis:
         {regla_ciclo}
-        2. Correlación Ballena/Precio: Evalúa la fiabilidad de la ballena y si actúa como líder o seguidora respecto al ciclo y al gráfico.
-        3. SMC y T. Latino: Confirma las zonas de liquidez (FVG) y la direccionalidad del Monitor.
+        2. Correlación Ballena/Precio: Evalúa si la actividad on-chain confirma o contradice la acción del precio. ¿La ballena es líder o seguidora?
+        3. SMC y T. Latino: Confirma las zonas de liquidez (FVG activos) y la direccionalidad del Monitor (MACD diff).
 
         Genera un reporte agresivo y directo en 3 puntos:
         {punto_1}
-        2. 🐋 Análisis de Liquidez y On-Chain.
-        3. 💡 Veredicto Institucional y Operativa con levels.
+        2. 🐋 Análisis de Liquidez y On-Chain (ballenas, sentimiento retail, flujo institucional).
+        3. 💡 Veredicto Institucional y Operativa — sesgo, entrada USD exacta, Stop Loss y Take Profit.
+
+        REGLA ABSOLUTA: Usa 'USD' en lugar del símbolo dólar. Sin frases genéricas. Máximo 300 palabras.
         """
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    respuesta = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
-    return respuesta.text
+    ctx = {
+        "ticker": simbolo,
+        "precio": precio_actual,
+        "razones": [datos_extra[:80]] if datos_extra else [],
+    }
+    return llamar_gemini(prompt, GEMINI_API_KEY, contexto_fallback=ctx)
+
 
 # ==========================================
-# 🖥️ INTERFAZ DE STREAMLIT Y BARRA LATERAL
+# 🛠️ FUNCIONES AUXILIARES
+# ==========================================
+
+def enviar_alerta_telegram(mensaje: str) -> None:
+    """
+    Envía el análisis al chat privado y al grupo configurado.
+    Fragmenta mensajes largos en bloques de 4000 chars (límite de Telegram).
+    """
+    if not TELEGRAM_TOKEN:
+        st.error("❌ TELEGRAM_TOKEN no configurado en secrets.")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    fragmentos = [mensaje[i:i + 4000] for i in range(0, len(mensaje), 4000)]
+    destinos = [d for d in (TELEGRAM_CHAT_ID, TELEGRAM_GROUP_ID) if d]
+
+    envios_exitosos = 0
+    for chat_destino in destinos:
+        for fragmento in fragmentos:
+            payload = {
+                "chat_id":    chat_destino,
+                "text":       fragmento,
+                "parse_mode": "Markdown",
+            }
+            try:
+                respuesta = requests.post(url, json=payload, timeout=10)
+                if respuesta.status_code != 200:
+                    # Reintento sin Markdown si falla el formato
+                    payload_seguro = {"chat_id": chat_destino, "text": fragmento}
+                    requests.post(url, json=payload_seguro, timeout=10)
+                else:
+                    envios_exitosos += 1
+            except requests.exceptions.RequestException as e:
+                st.error(f"❌ Error de conexión al enviar a {chat_destino}: {e}")
+
+    if envios_exitosos > 0:
+        st.toast("✅ ¡Análisis enviado a Telegram (Privado y Grupo)!")
+
+
+def obtener_sentimiento_macro() -> str:
+    """Fear & Greed Index de Crypto (alternative.me)."""
+    try:
+        datos = requests.get("https://api.alternative.me/fng/", timeout=5).json()
+        val   = datos['data'][0]['value']
+        label = datos['data'][0]['value_classification']
+        return f"{val}/100 ({label})"
+    except Exception:
+        return "Desconocido"
+
+
+def calcular_fase_ciclo() -> tuple:
+    """
+    Calcula semanas desde el último Halving y determina la fase macro.
+    Restaurado del cerebro viejo — alimenta el prompt de cripto semanal/mensual.
+    """
+    import datetime as _dt
+    fecha_halving = _dt.datetime(2024, 4, 19)
+    hoy           = _dt.datetime.now()
+    semanas       = int((hoy - fecha_halving).days / 7)
+
+    if semanas < 40:
+        fase  = "Post-Halving (Acumulación temprana / Choque de oferta)"
+        color = "🔵"
+    elif 40 <= semanas < 77:
+        fase  = "Markup Parabólico (Profit START) — Tendencia Alcista Fuerte"
+        color = "🟢"
+    elif 77 <= semanas < 135:
+        fase  = "Distribución / Corrección (PROFIT END superado) — Mercado Bajista"
+        color = "🔴"
+    else:
+        fase  = "DCA START (Suelo del Mercado / Acumulación Pre-Halving)"
+        color = "🟡"
+
+    return semanas, fase, color
+
+
+def rastrear_ballena_btc(direccion_btc: str) -> str:
+    """Rastrea actividad de una billetera BTC vía mempool.space."""
+    url_stats = f"https://mempool.space/api/address/{direccion_btc}"
+    url_txs   = f"https://mempool.space/api/address/{direccion_btc}/txs"
+    try:
+        datos = requests.get(url_stats, timeout=5).json()
+        stats = datos['chain_stats']
+
+        balance_btc = (stats['funded_txo_sum'] - stats['spent_txo_sum']) / 100_000_000
+        tx_entradas = stats['funded_txo_count']
+        tx_salidas  = stats['spent_txo_count']
+        total_txs   = tx_entradas + tx_salidas
+
+        resp_txs  = requests.get(url_txs, timeout=5)
+        historial = resp_txs.json() if resp_txs.status_code == 200 else []
+
+        fecha_ultima_tx = "Desconocida"
+        if historial and 'block_time' in historial[0]:
+            fecha_ultima_tx = datetime.datetime.fromtimestamp(
+                historial[0]['block_time']
+            ).strftime('%Y-%m-%d %H:%M')
+
+        # Clasificación de perfil
+        if total_txs < 5:
+            perfil = "Billetera Nueva / Posible Exchange Interno"
+        elif tx_salidas == 0 and tx_entradas > 5:
+            perfil = "💎 Diamond Hands (Acumulador Institucional — No Vende)"
+        elif tx_salidas > 0 and tx_entradas > 50:
+            perfil = "📈 Trader Activo / Fondo de Inversión"
+        else:
+            perfil = "Indeterminado"
+
+        return (
+            f"💰 **Balance Actual:** {balance_btc:,.4f} BTC\n\n"
+            f"🧠 **Perfil Smart Money:** {perfil}\n\n"
+            f"🔄 **Transacciones:** {total_txs} (Entradas: {tx_entradas} | Salidas: {tx_salidas})\n\n"
+            f"⏱️ **Último Movimiento:** {fecha_ultima_tx}"
+        )
+    except Exception:
+        return "❌ No se pudo rastrear. Verifica que la dirección BTC sea válida."
+
+
+def rastrear_ballena_eth(direccion_eth: str) -> str:
+    """Rastrea actividad de una billetera ETH vía Etherscan."""
+    if not ETHERSCAN_API_KEY:
+        return "❌ Falta la API Key de Etherscan en tus secrets."
+
+    try:
+        # API V2 de Etherscan (la V1 fue dada de baja en 2025); chainid=1 = Mainnet
+        url_balance = (
+            f"https://api.etherscan.io/v2/api?chainid=1&module=account&action=balance"
+            f"&address={direccion_eth}&tag=latest&apikey={ETHERSCAN_API_KEY}"
+        )
+        res_balance = requests.get(url_balance, timeout=5).json()
+        balance_eth = int(res_balance['result']) / 1e18 if res_balance.get('status') == '1' else 0
+
+        url_tx = (
+            f"https://api.etherscan.io/v2/api?chainid=1&module=proxy&action=eth_getTransactionCount"
+            f"&address={direccion_eth}&tag=latest&apikey={ETHERSCAN_API_KEY}"
+        )
+        res_tx   = requests.get(url_tx, timeout=5).json()
+        tx_count = int(res_tx['result'], 16) if 'result' in res_tx else "Desconocido"
+
+        return (
+            f"🔷 **Balance Actual:** {balance_eth:,.4f} ETH\n"
+            f"🔄 **Total de Transacciones:** {tx_count}\n"
+            f"🔗 **Red:** Ethereum Mainnet"
+        )
+    except Exception:
+        return "❌ No se pudo rastrear. Verifica la dirección ETH y tu API Key."
+
+
+def escanear_anomalias_btc() -> dict:
+    """Detecta ballenas en el último bloque BTC via mempool.space."""
+    try:
+        block_hash = requests.get(
+            "https://mempool.space/api/blocks/tip/hash", timeout=5
+        ).text
+        txs = requests.get(
+            f"https://mempool.space/api/block/{block_hash}/txs", timeout=10
+        ).json()
+
+        miner_tx = txs[0]
+        recompensa_minero = sum(
+            out.get('value', 0) for out in miner_tx.get('vout', [])
+        ) / 100_000_000
+
+        mayor_volumen = 0
+        tx_ballena    = ""
+        dir_ballena   = ""
+
+        for tx in txs[1:]:
+            volumen_tx     = 0
+            max_vout_value = 0
+            dir_temp       = ""
+
+            for out in tx.get('vout', []):
+                val = out.get('value', 0)
+                volumen_tx += val
+                if val > max_vout_value and 'scriptpubkey_address' in out:
+                    max_vout_value = val
+                    dir_temp = out['scriptpubkey_address']
+
+            volumen_btc = volumen_tx / 100_000_000
+            if volumen_btc > mayor_volumen:
+                mayor_volumen = volumen_btc
+                tx_ballena    = tx.get('txid', '')
+                dir_ballena   = dir_temp
+
+        return {
+            "exito":                True,
+            "bloque_hash":          block_hash[:15] + "...",
+            "recompensa_minero":    recompensa_minero,
+            "ballena_tx":           tx_ballena[:15] + "..." if tx_ballena else "N/A",
+            "volumen_ballena":      mayor_volumen,
+            "direccion_destinatario": dir_ballena,
+        }
+    except Exception:
+        return {"exito": False}
+
+
+# ==========================================
+# 🖥️ INTERFAZ STREAMLIT
 # ==========================================
 st.set_page_config(page_title="Terminal Financiero AI", page_icon="📈", layout="wide")
-st.title("📊 Mi Terminal de Inteligencia Financiera")
+st.title("📊 Terminal de Inteligencia Financiera")
 
 st.sidebar.header("Panel de Control")
-tipo_mercado = st.sidebar.radio("Selecciona el Mercado:", ["📈 Bolsa (NY / MX)", "🪙 Criptomonedas"])
-simbolo = ""
+mostrar_estado_gemini_sidebar()
+tipo_mercado = st.sidebar.radio(
+    "Selecciona el Módulo:",
+    [
+        "📈 Análisis Individual (NY / MX)",
+        "🪙 Criptomonedas",
+        "🌐 Escáner Global (Value/Momentum)",
+        "🧱 Flujo de Opciones (Derivados)",
+        "🎯 Radar de Opciones (Score Quant)",
+    ]
+)
 
-if tipo_mercado == "📈 Bolsa (NY / MX)":
-    region = st.sidebar.selectbox("Región:", ["🇺🇸 Wall Street (NY)", "🇲🇽 Bolsa Mexicana (BMV)", "✍️ Búsqueda Manual"])
+# ==========================================
+# 🎛️ LÓGICA DE LOS MENÚS LATERALES
+# ==========================================
+simbolo           = ""
+temporalidad      = "Diario"
+red_onchain       = "Ninguna"
+direccion_ballena = ""
+datos_escaner     = None
+
+if tipo_mercado == "📈 Análisis Individual (NY / MX)":
+    region = st.sidebar.selectbox(
+        "Región:",
+        ["🇺🇸 Wall Street (NY)", "🇲🇽 Bolsa Mexicana (BMV)", "✍️ Búsqueda Manual"]
+    )
     if region == "🇺🇸 Wall Street (NY)":
-        opciones_ny = {"Apple (AAPL)": "AAPL", "Nvidia (NVDA)": "NVDA", "Microsoft (MSFT)": "MSFT", "Tesla (TSLA)": "TSLA"}
+        opciones_ny = {
+            "Apple (AAPL)": "AAPL", "Nvidia (NVDA)": "NVDA",
+            "Microsoft (MSFT)": "MSFT", "Tesla (TSLA)": "TSLA", "S&P 500 (SPY)": "SPY",
+        }
         simbolo = opciones_ny.get(st.sidebar.selectbox("Empresa:", list(opciones_ny.keys())), "")
     elif region == "🇲🇽 Bolsa Mexicana (BMV)":
-        opciones_mx = {"Grupo México": "GMEXICOB.MX", "Walmart": "WALMEX.MX", "América Móvil": "AMXL.MX", "Banorte": "GFNORTEO.MX"}
+        opciones_mx = {
+            "Grupo México": "GMEXICOB.MX",
+            "Walmart":      "WALMEX.MX",
+            "América Móvil": "AMXB.MX",
+        }
         simbolo = opciones_mx.get(st.sidebar.selectbox("Empresa:", list(opciones_mx.keys())), "")
-    else: simbolo = st.sidebar.text_input("Símbolo:", "AMD").upper()
-else:
-    opciones_cripto = {"Bitcoin (BTC)": "BTC-USD", "Ethereum (ETH)": "ETH-USD", "Solana (SOL)": "SOL-USD"}
-    seleccion = st.sidebar.selectbox("Criptomoneda:", list(opciones_cripto.keys()) + ["✍️ Búsqueda Manual"])
-    simbolo = st.sidebar.text_input("Símbolo:", "DOGE-USD").upper() if seleccion == "✍️ Búsqueda Manual" else opciones_cripto.get(seleccion, "")
+    else:
+        simbolo = st.sidebar.text_input("Símbolo:", "AMD").upper()
+    temporalidad = st.sidebar.selectbox(
+        "Temporalidad (Velas):", ["1 Hora", "4 Horas", "Diario", "Semanal", "Mensual"], index=2
+    )
 
-temporalidad = st.sidebar.selectbox("Temporalidad (Velas):", ["1 Hora", "4 Horas", "Diario", "Semanal", "Mensual"], index=2)
+elif tipo_mercado == "🪙 Criptomonedas":
+    opciones_cripto = {
+        "Bitcoin (BTC)":  "BTC-USD",
+        "Ethereum (ETH)": "ETH-USD",
+        "Solana (SOL)":   "SOL-USD",
+    }
+    seleccion = st.sidebar.selectbox(
+        "Criptomoneda:", list(opciones_cripto.keys()) + ["✍️ Búsqueda Manual"]
+    )
+    simbolo = (
+        st.sidebar.text_input("Símbolo:", "DOGE-USD").upper()
+        if seleccion == "✍️ Búsqueda Manual"
+        else opciones_cripto.get(seleccion, "")
+    )
+    temporalidad = st.sidebar.selectbox(
+        "Temporalidad (Velas):", ["1 Hora", "4 Horas", "Diario", "Semanal", "Mensual"], index=2
+    )
 
-# --- PANEL ON-CHAIN ---
-red_onchain = "Ninguna"
-direccion_ballena = ""
-datos_escaner = None
-
-if tipo_mercado == "🪙 Criptomonedas":
     st.sidebar.markdown("---")
     st.sidebar.subheader("🕵️‍♂️ Radar On-Chain")
-    red_onchain = st.sidebar.selectbox("Rastrear Billetera Específica:", ["Ninguna", "Bitcoin (BTC)", "Ethereum (ETH)"])
-    if red_onchain != "Ninguna": direccion_ballena = st.sidebar.text_input("Dirección de la Billetera:")
-    
+    red_onchain = st.sidebar.selectbox(
+        "Rastrear Billetera Específica:", ["Ninguna", "Bitcoin (BTC)", "Ethereum (ETH)"]
+    )
+    if red_onchain != "Ninguna":
+        direccion_ballena = st.sidebar.text_input("Dirección de la Billetera:")
+
     st.sidebar.markdown("---")
     st.sidebar.subheader("🚀 Escáner Caza-Ballenas")
+    # Guardado en session_state: sin esto el resultado se pierde en el
+    # siguiente rerun de Streamlit y nunca llega al prompt de la IA.
     if st.sidebar.button("🔎 Escanear Último Bloque (BTC)"):
-        with st.sidebar.status("Conectando a mempool.space..."): datos_escaner = escanear_anomalias_btc()
+        with st.sidebar.status("Conectando a mempool.space..."):
+            st.session_state["datos_escaner_btc"] = escanear_anomalias_btc()
+    datos_escaner = st.session_state.get("datos_escaner_btc")
+    if datos_escaner and datos_escaner.get("exito"):
+        if st.sidebar.button("🗑️ Limpiar resultado del escáner"):
+            st.session_state.pop("datos_escaner_btc", None)
+            datos_escaner = None
+
+elif tipo_mercado == "🧱 Flujo de Opciones (Derivados)":
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("⚙️ Configuración Quant")
+    opciones_derivados = {
+        "S&P 500 (SPY)":     "SPY",
+        "Nasdaq 100 (QQQ)":  "QQQ",
+        "Bitcoin ETF (IBIT)": "IBIT",
+        "Tesla (TSLA)":      "TSLA",
+        "Apple (AAPL)":      "AAPL",
+    }
+    seleccion = st.sidebar.selectbox(
+        "Activo a escanear:", list(opciones_derivados.keys()) + ["✍️ Búsqueda Manual"]
+    )
+    simbolo = (
+        st.sidebar.text_input("Símbolo:", "NVDA").upper()
+        if seleccion == "✍️ Búsqueda Manual"
+        else opciones_derivados.get(seleccion, "")
+    )
+
+elif tipo_mercado == "🌐 Escáner Global (Value/Momentum)":
+    st.header("📡 Radar Institucional Separado")
+    st.write("Escanea el mercado y clasifica las oportunidades separando Acciones de ETFs para evitar ruido.")
+
+    universos = {
+        "🇺🇸 Top 50 Wall Street (Megacaps)": (
+            "AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, BRK-B, LLY, AVGO, V, JPM, WMT, UNH, "
+            "MA, PG, JNJ, XOM, HD, ORCL, COST, BAC, ABBV, CRM, CVX, NFLX, AMD, PEP, TMO, KO, "
+            "WFC, DIS, CSCO, ACN, MCD, LIN, INTU, IBM, QCOM, CAT, GE, TXN, AMAT, ISRG, PM, "
+            "NOW, UNP, COP, GS, AXP"
+        ),
+        "🧺 Top 30 ETFs (Sectores y Macro)": (
+            "SPY, QQQ, DIA, IWM, VOO, VTI, GLD, SLV, USO, UNG, XLE, XLF, XLK, XLV, XLI, "
+            "XLY, XLP, XLU, XLB, XLRE, XLC, ARKK, SMH, KRE, EEM, TLT, HYG, LQD"
+        ),
+        "🇲🇽 BMV (Bolsa Mexicana)": (
+            "WALMEX.MX, GMEXICOB.MX, AMXB.MX, GFNORTEO.MX, FEMSAUBD.MX, "
+            "CEMEXCPO.MX, GAPB.MX, ASURB.MX, BIMBOA.MX, AC.MX"
+        ),
+        "🔍 Búsqueda Profunda (Finviz — Joyas Ocultas)": "AUTO",
+        "✍️ Lista Personalizada": "",
+    }
+
+    seleccion_universo = st.radio("Selecciona el Universo a Escanear:", list(universos.keys()))
+
+    if seleccion_universo == "🔍 Búsqueda Profunda (Finviz — Joyas Ocultas)":
+        st.info("🤖 **Filtros Quant Activos:** P/E < 20, EPS positivo, Volumen > 500K, Precio sobre SMA 200.")
+        tickers_input = ""
+    else:
+        tickers_default = universos[seleccion_universo]
+        tickers_input = st.text_area(
+            "Tickers a escanear (separados por coma):", value=tickers_default, height=100
+        )
+
+    if st.button("🚀 Iniciar Barrido Inteligente"):
+        lista_tickers = []
+
+        if seleccion_universo == "🔍 Búsqueda Profunda (Finviz — Joyas Ocultas)":
+            with st.spinner("🕵️‍♂️ Extrayendo activos desde Finviz..."):
+                try:
+                    import re
+                    url_finviz = (
+                        "https://finviz.com/screener.ashx?v=111"
+                        "&f=fa_epsyoy_pos,fa_pe_u20,sh_curvol_o500,ta_sma200_pa"
+                    )
+                    headers = {
+                        'User-Agent': (
+                            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                            'AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
+                        ),
+                        'Accept': 'text/html,application/xhtml+xml',
+                    }
+                    respuesta = requests.get(url_finviz, headers=headers, timeout=10)
+                    tickers_encontrados = re.findall(r'quote\.ashx\?t=([A-Z]+)', respuesta.text)
+                    lista_tickers = list(set(tickers_encontrados))[:25]
+
+                    if lista_tickers:
+                        st.success(f"✅ {len(lista_tickers)} activos extraídos. Iniciando motor Quant...")
+                    else:
+                        st.warning("⚠️ Finviz no arrojó resultados para estos filtros hoy.")
+                except Exception as e:
+                    st.error(f"❌ Error al conectar con Finviz: {e}")
+        else:
+            lista_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+
+        if lista_tickers:
+            barra_progreso = st.progress(0)
+            st.info(f"⏳ Analizando {len(lista_tickers)} activos en paralelo...")
+
+            df_val, df_mom_acc, df_mom_etf = escaneo_institucional_dual(lista_tickers)
+            barra_progreso.progress(100)
+
+            st.markdown("---")
+            st.subheader("🛒 Ángeles Caídos (Acciones Value en Descuento)")
+            if not df_val.empty:
+                st.dataframe(df_val, width="stretch", hide_index=True)
+            else:
+                st.warning("No se encontraron acciones en descuento extremo.")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("🏢 Momentum Acciones")
+                if not df_mom_acc.empty:
+                    st.dataframe(df_mom_acc, width="stretch", hide_index=True)
+                else:
+                    st.warning("No hay acciones rompiendo al alza con volumen.")
+
+            with col2:
+                st.subheader("🧺 Momentum ETFs")
+                if not df_mom_etf.empty:
+                    st.dataframe(df_mom_etf, width="stretch", hide_index=True)
+                else:
+                    st.warning("No hay ETFs rompiendo al alza con volumen.")
+
 
 # ==========================================
-# ⚙️ MOTOR PRINCIPAL DE DATOS Y GRÁFICOS
+# ⚙️ MÓDULO PRINCIPAL: ANÁLISIS INDIVIDUAL
 # ==========================================
-if simbolo:
-    st.write(f"---")
-    st.write(f"## Analizando: {simbolo} ({tipo_mercado}) - Gráfico de {temporalidad}")
-    ticker = yf.Ticker(simbolo)
-    
-    if temporalidad == "1 Hora": periodo_yf, intervalo_yf = "2mo", "1h"
-    elif temporalidad == "4 Horas": periodo_yf, intervalo_yf = "3mo", "1h"
-    elif temporalidad == "Semanal": periodo_yf, intervalo_yf = "10y", "1wk"
-    elif temporalidad == "Mensual": periodo_yf, intervalo_yf = "max", "1mo"
-    else: periodo_yf, intervalo_yf = "5y", "1d"
-        
-    hist = ticker.history(period=periodo_yf, interval=intervalo_yf)
-    
+if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"] and simbolo:
+    st.write("---")
+    st.write(f"## Analizando: {simbolo} — Gráfico de {temporalidad}")
+
+    # Mapeo de temporalidad a parámetros yfinance
+    config_temporal = {
+        "1 Hora":   ("2mo",  "1h"),
+        "4 Horas":  ("3mo",  "1h"),
+        "Semanal":  ("10y",  "1wk"),
+        "Mensual":  ("max",  "1mo"),
+        "Diario":   ("5y",   "1d"),
+    }
+    periodo_yf, intervalo_yf = config_temporal.get(temporalidad, ("5y", "1d"))
+
+    # ✅ Descarga cacheada: re-renders por toggle son instantáneos
+    hist = descargar_historia(simbolo, periodo_yf, intervalo_yf)
+
     if not hist.empty:
-        if temporalidad == "4 Horas": hist = hist.resample('4H').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+        if temporalidad == "4 Horas":
+            hist = hist.resample('4h').agg({
+                'Open': 'first', 'High': 'max',
+                'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+            }).dropna()
+
         precio_actual = hist['Close'].iloc[-1]
-        info = ticker.info
+        datos = procesar_datos_tecnicos(hist)
 
-        # Cálculos Técnicos
-        hist['EMA_10'] = ta.trend.ema_indicator(hist['Close'], window=10)
-        hist['EMA_55'] = ta.trend.ema_indicator(hist['Close'], window=55)
-        hist['EMA_200'] = ta.trend.ema_indicator(hist['Close'], window=200)
-        hist['ADX'] = ta.trend.adx(hist['High'], hist['Low'], hist['Close'], window=14)
-        hist['Monitor'] = ta.trend.macd_diff(hist['Close'])
-        
-        ema_10, ema_55 = hist['EMA_10'].iloc[-1], hist['EMA_55'].iloc[-1]
-        ema_200 = hist['EMA_200'].dropna().iloc[-1] if not hist['EMA_200'].dropna().empty else 0
-        adx_actual, adx_previo = hist['ADX'].iloc[-1], hist['ADX'].iloc[-2]
-        monitor_actual, monitor_previo = hist['Monitor'].iloc[-1], hist['Monitor'].iloc[-2]
-        
-        pendiente_adx = "Negativa (Pierde Fuerza) 📉" if adx_actual < adx_previo else "Positiva (Gana Fuerza) 📈"
-        direccion_monitor = "Alcista 🟢" if monitor_actual > monitor_previo else "Bajista 🔴"
-
-        fvg_bullish = fvg_bearish = "Sin Imbalance Cercano"
-        for i in range(len(hist)-1, max(len(hist)-20, 2), -1):
-            if hist['Low'].iloc[i] > hist['High'].iloc[i-2] and fvg_bullish == "Sin Imbalance Cercano": fvg_bullish = f"${hist['High'].iloc[i-2]:.2f} - ${hist['Low'].iloc[i]:.2f}"
-            if hist['High'].iloc[i] < hist['Low'].iloc[i-2] and fvg_bearish == "Sin Imbalance Cercano": fvg_bearish = f"${hist['High'].iloc[i]:.2f} - ${hist['Low'].iloc[i-2]:.2f}"
-
-        ha_df = hist.copy()
-        ha_df['HA_Close'] = (hist['Open'] + hist['High'] + hist['Low'] + hist['Close']) / 4
-        ha_open_list = [(hist['Open'].iloc[0] + hist['Close'].iloc[0]) / 2]
-        for i in range(1, len(hist)): ha_open_list.append((ha_open_list[i-1] + ha_df['HA_Close'].iloc[i-1]) / 2)
-        ha_df['HA_Open'] = ha_open_list
-        ha_df['HA_High'] = ha_df[['High', 'HA_Open', 'HA_Close']].max(axis=1)
-        ha_df['HA_Low'] = ha_df[['Low', 'HA_Open', 'HA_Close']].min(axis=1)
-
-        # 🖥️ MÉTRICAS EN PANTALLA
+        # --- Métricas de UI ---
         st.subheader(f"⚙️ Setup Institucional ({temporalidad})")
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Precio Actual", f"${precio_actual:,.2f}")
-        col2.metric("T. Latino: Monitor", direccion_monitor)
-        col3.metric("SMC: EMA 200", f"${ema_200:,.2f}" if ema_200 > 0 else "N/A")
+        col1.metric("Precio Actual",   f"${precio_actual:,.2f}")
+        col2.metric("T. Latino: Monitor", datos['direccion_monitor'])
+        col3.metric("SMC: EMA 200",    f"${datos['ema_200']:,.2f}" if datos['ema_200'] > 0 else "N/A")
+        col4.metric("📊 Mercado",      "Renta Variable" if "Bolsa" in tipo_mercado else "Cripto")
 
-        sentimiento_mercado = "N/A"
-        datos_onchain_ia = ""
-        ciclo_macro_ia = ""
-        
-        if tipo_mercado == "🪙 Criptomonedas":
-            sentimiento_mercado = obtener_sentimiento_macro()
-            col4.metric("🌐 Sentimiento Macro", sentimiento_mercado)
-            
-            # --- RENDERIZAR BANNER DEL RELOJ DEL CICLO ---
-        semanas_h, fase_h, color_h = calcular_fase_ciclo()
-        ciclo_macro_ia = f"Semana {semanas_h} post-halving. Fase: {fase_h}."
+        st.write(
+            f"**T. Latino:** ADX {datos['adx_actual']:.2f} ({datos['pendiente_adx']}) | "
+            f"EMA 55: ${datos['ema_55']:,.2f}"
+        )
+        st.write(
+            f"**SMC Liquidez (FVG):** Imbalance Alc: `{datos['fvg_bullish']}` | "
+            f"Imbalance Baj: `{datos['fvg_bearish']}`"
+        )
 
-        # Guardamos tu diseño original en una variable para no repetir código
-        banner_original = f"""
-        <div style="padding: 15px; border-radius: 5px; background-color: rgba(255, 255, 255, 0.05); border-left: 5px solid {'#F23645'}">
-            <h4 style="margin:0; padding:0;">{color_h} Reloj del Ciclo Halving (Semana +{semanas_h}w)</h4>
-            <p style="margin:5px 0 0 0; font-size:14px; opacity:0.8;"><b>Fase Actual:</b> {fase_h}</p>
-        </div>
-        <br>
-        """
+        # --- Panel de Toggles ---
+        st.write("🎛️ **Capas de Trading (On/Off)**")
+        t_col1, t_col2, t_col3 = st.columns(3)
+        toggles = {
+            "EMAs":   t_col1.toggle("🧠 EMAs Institucionales", value=True),
+            "UT_Bot": t_col2.toggle("🤖 Smart PM Bot (ADX Filter)", value=False),
+            "SMI":    t_col3.toggle("🌊 Oscilador SMI", value=False),
+        }
 
-        # 🔮 MODO DEMO: División de columnas solo en Semanal
-        if temporalidad == "Semanal" and "BTC" in simbolo:
-            col_reloj, col_leyenda = st.columns([1.5, 1]) # 60% para el Reloj, 40% para la Leyenda
-            
-            with col_reloj:
-                st.markdown(banner_original, unsafe_allow_html=True)
-                
-            with col_leyenda:
-                # El cuadro de la leyenda ocupando el "área amarilla"
-                st.markdown("""
-                <div style="padding: 10px; border-radius: 5px; background-color: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255,255,255,0.1); margin-top: 2px;">
-                    <div style="font-size: 13px; display: flex; flex-direction: column; gap: 4px;">
-                        <div><span style="color: #FF9800; font-weight: bold;">——</span> Halving (0w)</div>
-                        <div><span style="color: #089981; font-weight: bold;">——</span> Profit Start (+40w)</div>
-                        <div><span style="color: #F23645; font-weight: bold;">——</span> Profit End (+77w)</div>
-                        <div><span style="color: #FFD700; font-weight: bold;">——</span> DCA Start (+135w)</div>
-                    </div>
+        # --- Gráfico Plotly ---
+        fig = construir_grafico_tecnico(
+            datos['hist'], datos['ha_df'], datos['ema_200'],
+            temporalidad, tipo_mercado, toggles
+        )
+        st.plotly_chart(fig, width="stretch", config={
+            'scrollZoom': True, 'displayModeBar': False
+        })
+
+        # Leyenda Halving (solo cripto semanal)
+        if temporalidad == "Semanal" and "Cripto" in tipo_mercado:
+            st.markdown("""
+            <div style="padding:12px;border-radius:8px;background-color:rgba(255,255,255,0.05);
+                        border:1px solid rgba(255,255,255,0.1);margin-top:5px;margin-bottom:15px;">
+                <div style="font-size:14px;display:flex;justify-content:space-around;flex-wrap:wrap;gap:10px;">
+                    <div><span style="color:#FF9800;font-weight:bold;">——</span> <b>Halving</b></div>
+                    <div><span style="color:#089981;font-weight:bold;">——</span> <b>Profit Start</b></div>
+                    <div><span style="color:#F23645;font-weight:bold;">——</span> <b>Profit End</b></div>
+                    <div><span style="color:#FFD700;font-weight:bold;">——</span> <b>DCA Start</b></div>
                 </div>
-                """, unsafe_allow_html=True)
-                
-        else:
-            # Si estamos en Diario, 4H o viendo otra moneda, se muestra normal sin la leyenda
-            st.markdown(banner_original, unsafe_allow_html=True)
+            </div>
+            """, unsafe_allow_html=True)
 
+        # --- Resultados On-Chain ---
+        if "Cripto" in tipo_mercado:
             if datos_escaner and datos_escaner.get("exito"):
                 st.success("✅ **Escáner On-Chain Completado (Último Bloque BTC)**")
                 c1, c2 = st.columns(2)
-                c1.info(f"🐋 **Mayor Transacción (Ballena):**\n\n Volumen: **{datos_escaner['volumen_ballena']:,.2f} BTC**\n\n TX ID: `{datos_escaner['ballena_tx']}`")
-                c2.warning(f"⛏️ **Actividad de Mineros:**\n\n Recompensa/Movimiento: **{datos_escaner['recompensa_minero']:,.2f} BTC**\n\n Bloque: `{datos_escaner['bloque_hash']}`")
-                datos_onchain_ia += f"Escáner en vivo: En el último bloque se detectó una transacción ballena de {datos_escaner['volumen_ballena']:.2f} BTC. El minero movió {datos_escaner['recompensa_minero']:.2f} BTC. "
+                with c1:
+                    st.info(
+                        f"🐋 **Mayor Transacción (Ballena):**\n\n"
+                        f"Volumen: **{datos_escaner['volumen_ballena']:,.2f} BTC**\n\n"
+                        f"TX ID: `{datos_escaner['ballena_tx']}`"
+                    )
+                    if datos_escaner.get('direccion_destinatario'):
+                        st.write("🎯 **Dirección de la Ballena (Clic ícono para copiar):**")
+                        st.code(datos_escaner['direccion_destinatario'], language=None)
+                with c2:
+                    st.warning(
+                        f"⛏️ **Actividad de Mineros:**\n\n"
+                        f"Recompensa/Movimiento: **{datos_escaner['recompensa_minero']:,.2f} BTC**\n\n"
+                        f"Bloque: `{datos_escaner['bloque_hash']}`"
+                    )
 
             if red_onchain != "Ninguna" and direccion_ballena:
-                if red_onchain == "Bitcoin (BTC)": resultado_ballena = rastrear_ballena_btc(direccion_ballena)
-                elif red_onchain == "Ethereum (ETH)": resultado_ballena = rastrear_ballena_eth(direccion_ballena)
-                st.info(f"**Billetera Monitoreada:** `{direccion_ballena}` \n\n {resultado_ballena}")
-                datos_onchain_ia += f"Billetera vigilada: {direccion_ballena}. Estado: {resultado_ballena}."
-            else:
-               col4.metric("📊 Mercado", "Renta Variable")
+                if red_onchain == "Bitcoin (BTC)":
+                    resultado_ballena = rastrear_ballena_btc(direccion_ballena)
+                elif red_onchain == "Ethereum (ETH)":
+                    resultado_ballena = rastrear_ballena_eth(direccion_ballena)
+                else:
+                    resultado_ballena = ""
 
-        st.write(f"**T. Latino:** ADX {adx_actual:.2f} ({pendiente_adx}) | EMA 55: ${ema_55:,.2f}")
-        st.write(f"**SMC Liquidez (FVG):** Imbalance Alc: `{fvg_bullish}` | Imbalance Baj: `{fvg_bearish}`")
+                if resultado_ballena:
+                    st.info(f"**Billetera Monitoreada:** `{direccion_ballena}`\n\n{resultado_ballena}")
 
-        datos_extra = f"Temporalidad: {temporalidad}. EMA 10: ${ema_10:.2f}, EMA 55: ${ema_55:.2f}, EMA 200: ${ema_200:.2f}. ADX: {adx_actual:.2f} ({pendiente_adx}). Monitor: {direccion_monitor}. FVG Alcista: {fvg_bullish}. FVG Bajista: {fvg_bearish}."
-        recomendacion_ia = "N/A"
-
-        # 🎨 GRÁFICO PLOTLY Y ZOOM
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3], specs=[[{"secondary_y": False}], [{"secondary_y": True}]])
-        fig.add_trace(go.Candlestick(x=ha_df.index, open=ha_df['HA_Open'], high=ha_df['HA_High'], low=ha_df['HA_Low'], close=ha_df['HA_Close'], name='Heikin Ashi', increasing_line_color='#089981', decreasing_line_color='#F23645'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_10'], mode='lines', line=dict(color='#2962FF', width=1.5), name='EMA 10'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_55'], mode='lines', line=dict(color='#FF6D00', width=2), name='EMA 55'), row=1, col=1)
-        if ema_200 > 0: fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_200'], mode='lines', line=dict(color='white', width=2), name='EMA 200'), row=1, col=1)
-
-        colores_monitor = []
-        for i in range(len(hist)):
-            if i == 0: colores_monitor.append('gray'); continue
-            val, prev = hist['Monitor'].iloc[i], hist['Monitor'].iloc[i-1]
-            if val >= 0: colores_monitor.append('#089981' if val > prev else '#006400')
-            else: colores_monitor.append('#F23645' if val < prev else '#8B0000')
-
-        fig.add_trace(go.Bar(x=hist.index, y=hist['Monitor'], marker_color=colores_monitor, name='Monitor', opacity=0.8), row=2, col=1, secondary_y=False)
-        fig.add_trace(go.Scatter(x=hist.index, y=hist['ADX'], mode='lines', line=dict(color='white', width=1.5), name='ADX'), row=2, col=1, secondary_y=True)
-        fig.add_hline(y=23, line_dash="dot", line_color="gray", row=2, col=1, secondary_y=True)
-
-     # --- CÁLCULO DE ZOOM (AMPLIADO Y MODO ORÁCULO) ---
-        ultima_fecha = hist.index[-1]
-        fecha_fin = ultima_fecha # Por defecto, el gráfico termina hoy
-        
-        if temporalidad == "1 Hora": 
-            fecha_inicio = ultima_fecha - pd.Timedelta(days=10)
-        elif temporalidad == "4 Horas": 
-            fecha_inicio = ultima_fecha - pd.Timedelta(days=18)
-        elif temporalidad == "Diario": 
-            fecha_inicio = ultima_fecha - pd.DateOffset(months=7)
-        elif temporalidad == "Semanal": 
-            fecha_inicio = ultima_fecha - pd.DateOffset(years=7)
-            fecha_fin = ultima_fecha + pd.DateOffset(months=10) # 🔮 MAGIA: 10 meses hacia el futuro
-        else: 
-            fecha_inicio = hist.index[0]
-            
-        fecha_inicio = max(fecha_inicio, hist.index[0])
-
-        # --- 🗺️ MAPA DEL CICLO HALVING (SOLO EN SEMANAL Y CRIPTO) ---
-        if temporalidad == "Semanal" and tipo_mercado == "🪙 Criptomonedas":
-            ciclos = [
-                {"halving": "2020-05-11", "start": "2021-02-15", "end": "2021-11-01", "dca": "2022-12-12"},
-                {"halving": "2024-04-19", "start": "2025-01-24", "end": "2025-10-10", "dca": "2026-11-20"}
-            ]
-            for ciclo in ciclos:
-                fig.add_vline(x=pd.to_datetime(ciclo["halving"]).timestamp() * 1000 if type(hist.index[0]) == pd.Timestamp else ciclo["halving"], line_dash="dot", line_color="#FF9800", line_width=2, opacity=0.8, row=1, col=1)
-                fig.add_vline(x=pd.to_datetime(ciclo["start"]).timestamp() * 1000 if type(hist.index[0]) == pd.Timestamp else ciclo["start"], line_dash="solid", line_color="#089981", line_width=2, opacity=0.6, row=1, col=1)
-                fig.add_vline(x=pd.to_datetime(ciclo["end"]).timestamp() * 1000 if type(hist.index[0]) == pd.Timestamp else ciclo["end"], line_dash="solid", line_color="#F23645", line_width=2, opacity=0.6, row=1, col=1)
-                fig.add_vline(x=pd.to_datetime(ciclo["dca"]).timestamp() * 1000 if type(hist.index[0]) == pd.Timestamp else ciclo["dca"], line_dash="solid", line_color="#FFD700", line_width=2, opacity=0.6, row=1, col=1)
-
-        fig.update_layout(template="plotly_dark", paper_bgcolor="#131722", plot_bgcolor="#131722", xaxis_rangeslider_visible=False, height=650, margin=dict(l=10, r=10, t=30, b=10), showlegend=False)
-        fig.update_xaxes(range=[fecha_inicio, fecha_fin], showgrid=False)                
-        fig.update_yaxes(showgrid=False)
-        st.plotly_chart(fig, width='stretch')
-
-# 📰 NOTICIAS E IA
+        # --- Análisis IA ---
         st.write("---")
-        noticias = ticker.news[:3]
-        textos_noticias = ""
-        if noticias:
-            traductor = GoogleTranslator(source='auto', target='es')
-            for n in noticias:
-                titular = n.get('title', 'Sin título')
-                try: titular_es = traductor.translate(titular)
-                except: titular_es = titular
-                textos_noticias += f"- {titular_es}\n"
-        
-        # --- ALINEACIÓN A PARTIR DE AQUÍ (8 ESPACIOS DESDE EL BORDE) ---
-        st.subheader("🤖 Análisis Asistido por Inteligencia Artificial")
-        
-        enviar_telegram = st.checkbox("📤 Enviar copia de este reporte a Telegram", value=True)
-        texto_boton = f"Generar y Enviar Análisis ({temporalidad}) 🚀" if enviar_telegram else f"Generar Análisis Local ({temporalidad}) 🤖"
-        
-        if st.button(texto_boton):
-            with st.spinner('Procesando Análisis Cuantitativo y Evaluando IA...'):
+        st.subheader("🤖 Análisis Asistido por Inteligencia Artificial (Técnico / On-Chain)")
+
+        enviar_telegram = st.checkbox("📤 Enviar copia de este reporte a Telegram", value=False)
+
+        if st.button(f"Generar Análisis ({temporalidad}) 🤖", type="primary"):
+            with st.spinner("Ensamblando contexto y consultando Gemini..."):
+
+                # ── 1. Datos técnicos completos (como el cerebro viejo)
+                datos_extra_str = (
+                    f"Temporalidad: {temporalidad}. "
+                    f"EMA 10: USD {datos['ema_10']:.2f}, "
+                    f"EMA 55: USD {datos['ema_55']:.2f}, "
+                    f"EMA 200: USD {datos['ema_200']:.2f}. "
+                    f"ADX: {datos['adx_actual']:.2f} ({datos['pendiente_adx']}). "
+                    f"Monitor: {datos['direccion_monitor']}. "
+                    f"FVG Alcista: {datos['fvg_bullish']}. "
+                    f"FVG Bajista: {datos['fvg_bearish']}."
+                )
+
+                # ── 2. Sentimiento macro (Fear & Greed)
+                sentimiento_str = ""
+                if "Cripto" in tipo_mercado:
+                    sentimiento_str = obtener_sentimiento_macro()
+
+                # ── 3. Reloj del ciclo Halving
+                ciclo_str = ""
+                if "Cripto" in tipo_mercado:
+                    semanas_h, fase_h, color_h = calcular_fase_ciclo()
+                    ciclo_str = f"Semana {semanas_h} post-halving. Fase: {fase_h}."
+
+                # ── 4. Datos on-chain acumulados en esta sesión
+                onchain_str = ""
+                if "Cripto" in tipo_mercado:
+                    if datos_escaner and datos_escaner.get("exito"):
+                        onchain_str += (
+                            f"Escáner último bloque BTC: ballena movió "
+                            f"{datos_escaner['volumen_ballena']:.2f} BTC "
+                            f"(TX: {datos_escaner['ballena_tx']}). "
+                            f"Minero: {datos_escaner['recompensa_minero']:.2f} BTC. "
+                        )
+                    if red_onchain != "Ninguna" and direccion_ballena:
+                        try:
+                            if red_onchain == "Bitcoin (BTC)":
+                                res_b = rastrear_ballena_btc(direccion_ballena)
+                            else:
+                                res_b = rastrear_ballena_eth(direccion_ballena)
+                            onchain_str += f"Billetera vigilada {direccion_ballena}: {res_b}"
+                        except Exception:
+                            pass
+
+                # ── 5. Noticias traducidas al español
+                noticias_str = ""
                 try:
-                    analisis_ia = analizar_con_gemini(simbolo, precio_actual, recomendacion_ia, textos_noticias, tipo_mercado, datos_extra, sentimiento_mercado, datos_onchain_ia, ciclo_macro_ia, temporalidad)
-                    
-                    st.success("Análisis completado:")
-                    st.markdown(analisis_ia.replace('$', '\\$'))
-                    
-                    if enviar_telegram:
-                        enviar_alerta_telegram(f"🚀 *REPORTE {temporalidad.upper()}: {simbolo}*\n\n{analisis_ia}")
-                        
-                except Exception as e:
-                    st.error(f"Error con la IA: {e}")
+                    ticker_obj   = yf.Ticker(simbolo)
+                    noticias_raw = ticker_obj.news[:3] if hasattr(ticker_obj, "news") else []
+                    if noticias_raw:
+                        traductor = GoogleTranslator(source="auto", target="es")
+                        for n in noticias_raw:
+                            # yfinance >= 0.2.5x anida el titular en content.title;
+                            # se conserva n["title"] como fallback para versiones viejas
+                            contenido = n.get("content") or {}
+                            titular = contenido.get("title") or n.get("title", "")
+                            if titular:
+                                try:    titular_es = traductor.translate(titular)
+                                except Exception: titular_es = titular
+                                noticias_str += f"- {titular_es}\n"
+                except Exception:
+                    noticias_str = "Sin noticias disponibles."
+
+                # ── 6. Consenso de analistas (solo bolsa)
+                recomendacion_str = "N/A"
+                if "NY" in tipo_mercado or "MX" in tipo_mercado or "Individual" in tipo_mercado:
+                    try:
+                        # recommendationKey solo existe en .info (fast_info no lo trae)
+                        info_ticker = yf.Ticker(simbolo).info
+                        recomendacion_str = info_ticker.get("recommendationKey", "N/A") or "N/A"
+                    except Exception:
+                        pass
+
+                # ── Llamada al cerebro completo
+                analisis = analizar_con_gemini(
+                    simbolo         = simbolo,
+                    precio_actual   = precio_actual,
+                    recomendacion   = recomendacion_str,
+                    textos_noticias = noticias_str or "Sin noticias.",
+                    tipo_mercado    = tipo_mercado,
+                    datos_extra     = datos_extra_str,
+                    sentimiento     = sentimiento_str,
+                    datos_onchain   = onchain_str,
+                    ciclo_macro     = ciclo_str,
+                    temporalidad    = temporalidad,
+                )
+
+            st.success("Análisis completado:")
+            st.markdown(analisis)
+            if enviar_telegram:
+                enviar_alerta_telegram(analisis)
+
+    else:
+        st.error(f"No se pudieron descargar datos para **{simbolo}**. Verifica que el ticker sea correcto.")
+
+
+# ==========================================
+# 🧱 MÓDULO DERIVADOS
+# ==========================================
+elif tipo_mercado == "🧱 Flujo de Opciones (Derivados)" and simbolo:
+    st.write("---")
+    st.title(f"🧱 Radar Quant (Derivados Multitiempo): {simbolo}")
+    st.write(
+        "Visualiza el Gamma Squeeze de esta semana y rastrea el posicionamiento "
+        "de las Ballenas para los próximos 6 meses."
+    )
+
+    if st.button(f"🕵️‍♂️ Extraer Flujo Institucional para {simbolo}", type="primary"):
+        with st.spinner(f"Escaneando 4 horizontes temporales y procesando IA Quant..."):
+            # ✅ Pasamos GEMINI_API_KEY como parámetro (no más st.secrets en el módulo)
+            df_muros, reporte_ia, fig_visual = escanear_flujo_institucional(
+                simbolo, gemini_api_key=GEMINI_API_KEY
+            )
+
+        if fig_visual is not None:
+            st.plotly_chart(fig_visual, width="stretch", config={'displayModeBar': False})
+
+        if not df_muros.empty:
+            st.markdown("### 🧱 Flujo Institucional (Todas las expiraciones)")
+            st.dataframe(df_muros, width="stretch", hide_index=True)
+            st.markdown("### 🧠 Setup de Trading y Visión Macro (IA)")
+            st.info(reporte_ia)
+        else:
+            st.warning(reporte_ia)
+
+
+# ==========================================
+# 🎯 MÓDULO: RADAR DE OPCIONES (SCORE QUANT)
+# ==========================================
+# Pantalla completamente independiente.
+# Escanea múltiples activos en paralelo y
+# genera score 0-100 por horizonte temporal.
+# ==========================================
+
+UNIVERSOS_RADAR = {
+    "🔥 Activos de Alta Liquidez (default)": [
+        "SPY", "QQQ", "AAPL", "NVDA", "TSLA", "META", "MSFT",
+        "AMZN", "AMD", "GOOGL", "IBIT", "GLD", "TLT",
+    ],
+    "🏦 Mega-Caps + Bancos": [
+        "JPM", "GS", "BAC", "WFC", "V", "MA", "BRK-B",
+        "XLF", "AAPL", "MSFT", "NVDA", "AMZN",
+    ],
+    "⚡ Tecnología / Semis": [
+        "NVDA", "AMD", "INTC", "AVGO", "QCOM", "AMAT",
+        "SMH", "SOXX", "TSM", "ARM", "MRVL",
+    ],
+    "✍️ Lista personalizada": [],
+}
+
+if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
+    st.header("🎯 Radar de Opciones Institucional")
+    st.caption(
+        "Escanea múltiples activos en paralelo. "
+        "Score 0–100 por horizonte: 🟢 ≥65 setup activo · 🟡 40-64 monitorear · 🔴 <40 sin señal."
+    )
+
+    # ── Sidebar: configuración del radar
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("⚙️ Configuración del Radar")
+
+    universo_sel = st.sidebar.selectbox(
+        "Universo de activos:", list(UNIVERSOS_RADAR.keys())
+    )
+
+    if universo_sel == "✍️ Lista personalizada":
+        tickers_raw = st.sidebar.text_area(
+            "Tickers (separados por coma):",
+            value="SPY, QQQ, TSLA, NVDA, AAPL",
+            height=90,
+        )
+        lista_radar = [t.strip().upper() for t in tickers_raw.split(",") if t.strip()]
+    else:
+        lista_radar = UNIVERSOS_RADAR[universo_sel]
+
+    st.sidebar.info(
+        f"**{len(lista_radar)} activos** a escanear.\n\n"
+        f"Tiempo estimado: ~{len(lista_radar) * 2 // 8 + 5}–{len(lista_radar) * 3 // 8 + 10} seg."
+    )
+
+    # ── Mostrar lista seleccionada en main
+    st.write(f"**Universo:** {universo_sel} — `{', '.join(lista_radar)}`")
+    st.markdown("---")
+
+    # ── Botón de escaneo
+    if st.button("🚀 Iniciar Radar Quant", type="primary", width="stretch"):
+
+        prog = st.progress(0, text="Inicializando conexiones...")
+        status_box = st.empty()
+
+        with st.spinner(f"Escaneando {len(lista_radar)} activos en los 3 horizontes..."):
+            prog.progress(15, text="Descargando cadenas de opciones...")
+            df_quant, df_swing, fig_gamma, reporte_ia, raw, contexto_macro = ejecutar_radar_opciones(
+                lista_radar,
+                gemini_api_key=GEMINI_API_KEY,
+            )
+            prog.progress(100, text="Análisis completado.")
+
+        status_box.empty()
+
+        if df_quant.empty and df_swing.empty:
+            st.warning("⚠️ No se obtuvieron datos de opciones. Verifica que los tickers tengan opciones listadas.")
+        else:
+            # ── Banner contexto macro
+            ses = contexto_macro.get("sesgo_macro", "desconocido")
+            ses_color = "#089981" if ses == "alcista" else "#F23645" if ses == "bajista" else "#FF9800"
+            ses_emoji = "🟢" if ses == "alcista" else "🔴" if ses == "bajista" else "🟡"
+            st.markdown(f"""            <div style="padding:10px 16px;border-radius:8px;background:rgba(255,255,255,0.04);
+                        border-left:4px solid {ses_color};margin-bottom:12px;">
+              <b>{ses_emoji} Contexto Macro del día — SPY/QQQ:</b>
+              &nbsp; Sesgo: <b style="color:{ses_color}">{ses.upper()}</b>
+              &nbsp;|&nbsp; SPY {contexto_macro.get('spy_ret3d',0):+.2f}% (3d)
+              &nbsp;|&nbsp; QQQ {contexto_macro.get('qqq_ret3d',0):+.2f}% (3d)
+            </div>""", unsafe_allow_html=True)
+
+            # ── Métricas resumen
+            señales_call = (df_swing["Señal"].str.contains("CALL")).sum() if not df_swing.empty else 0
+            señales_put  = (df_swing["Señal"].str.contains("PUT")).sum()  if not df_swing.empty else 0
+            señales_wait = (df_swing["Señal"].str.contains("WAIT")).sum() if not df_swing.empty else 0
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Activos escaneados", len(df_quant) if not df_quant.empty else 0)
+            m2.metric("🟢 BUY CALL",  señales_call)
+            m3.metric("🔴 BUY PUT",   señales_put)
+            m4.metric("🟡 WAIT",      señales_wait)
+
+            st.markdown("---")
+
+            # ── TAB 1: Swing Deep Scan (señal direccional)
+            tab1, tab2 = st.tabs(["🎯 Swing Deep Scan (1-3d)", "📊 Score Quant por Horizonte"])
+
+            with tab1:
+                st.caption("Señales direccionales BUY CALL / BUY PUT / WAIT con filtros técnicos (Squeeze · IV Rank · EMA · RSI · Liquidez). Ordenadas por score máximo.")
+                if not df_swing.empty:
+                    st.dataframe(df_swing, width="stretch", hide_index=True,
+                        column_config={
+                            "Score CALL": st.column_config.ProgressColumn("Score CALL", min_value=0, max_value=100),
+                            "Score PUT":  st.column_config.ProgressColumn("Score PUT",  min_value=0, max_value=100),
+                        })
+                else:
+                    st.info("Sin datos de Deep Scan.")
+
+            with tab2:
+                st.caption("Score Quant original 0-100 por horizonte: PCR extremo (30%) + Volumen inusual (25%) + Delta/OI (25%) + IV Spike (20%).")
+                if not df_quant.empty:
+                    st.dataframe(df_quant, width="stretch", hide_index=True,
+                        column_config={
+                            "Score Global": st.column_config.ProgressColumn("Score Global", min_value=0, max_value=100),
+                        })
+                else:
+                    st.info("Sin datos de Score Quant.")
+
+            st.markdown("---")
+
+            # ── Gráfico detallado (selector de ticker)
+            tickers_disp = df_swing["Ticker"].tolist() if not df_swing.empty else (df_quant["Ticker"].tolist() if not df_quant.empty else [])
+            if tickers_disp:
+                st.subheader("🔬 Análisis Detallado por Activo")
+                ticker_detail = st.selectbox("Ver gráfico detallado de:", tickers_disp, index=0)
+
+                if ticker_detail in raw:
+                    fig_sel = construir_grafico_radar(raw[ticker_detail])
+                    if fig_sel is not None:
+                        st.plotly_chart(fig_sel, width="stretch", config={"displayModeBar": False})
+                    else:
+                        st.info("Datos de opciones insuficientes para graficar este activo.")
+
+                    # Tabla de muros
+                    todos_muros = []
+                    for hk in ["scalping", "swing", "posicional"]:
+                        dh = raw[ticker_detail].get(hk)
+                        if dh and dh.get("muros"):
+                            for m in dh["muros"]:
+                                todos_muros.append({
+                                    "Horizonte": hk.capitalize(), "Tipo": m["tipo"],
+                                    "Strike": f"${m['strike']:.2f}", "OI": f"{m['oi']:,}",
+                                    "Valor Total": f"${m['dinero_M']:.1f}M", "IV%": f"{m['iv']:.1f}%",
+                                })
+                    if todos_muros:
+                        st.markdown(f"#### 🧱 Muros institucionales — {ticker_detail}")
+                        st.dataframe(pd.DataFrame(todos_muros), width="stretch", hide_index=True)
+
+                    # Sub-scores del Deep Scan
+                    sc = raw[ticker_detail].get("swing_scan", {})
+                    if sc:
+                        st.markdown(f"#### 🧪 Desglose Score Swing — {ticker_detail}")
+                        sub = {
+                            "Filtro": ["RVOL Precio (15%)", "Squeeze BB/KC (20%)", "IV Rank (20%)",
+                                       "Momentum EMA Bull (20%)", "Momentum EMA Bear (20%)",
+                                       "RSI Bull (10%)", "RSI Bear (10%)", "Liquidez (15%)"],
+                            "Sub-Score": [sc.get("_score_rvol","?"), sc.get("_score_squeeze","?"),
+                                          sc.get("_score_iv_rank","?"), sc.get("_score_mom_bull","?"),
+                                          sc.get("_score_mom_bear","?"), sc.get("_score_rsi_bull","?"),
+                                          sc.get("_score_rsi_bear","?"), sc.get("_score_liquidez","?")],
+                        }
+                        st.dataframe(pd.DataFrame(sub), width="stretch", hide_index=True)
+
+            st.markdown("---")
+
+            # ── Reporte IA del ticker líder
+            if reporte_ia:
+                lider_nombre = df_swing["Ticker"].iloc[0] if not df_swing.empty else "líder"
+                st.subheader(f"🤖 Setup Accionable IA — {lider_nombre}")
+                st.info(reporte_ia)
+                if st.button("📤 Enviar reporte a Telegram"):
+                    enviar_alerta_telegram(f"🎯 *Radar Opciones v3 — {lider_nombre}*\n\n{reporte_ia}")
+
