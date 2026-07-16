@@ -10,7 +10,7 @@ from deep_translator import GoogleTranslator
 # ==========================================
 from modules.radar_acciones import escaneo_institucional_dual
 from modules.radar_derivados import escanear_flujo_institucional
-from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_radar
+from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_radar, escanear_calls_baratos
 from modules.gemini_client import llamar_gemini, mostrar_estado_gemini_sidebar
 from modules.motor_grafico import construir_grafico_tecnico
 from modules.procesador_datos import procesar_datos_tecnicos, descargar_historia
@@ -329,6 +329,7 @@ tipo_mercado = st.sidebar.radio(
         "🌐 Escáner Global (Value/Momentum)",
         "🧱 Flujo de Opciones (Derivados)",
         "🎯 Radar de Opciones (Score Quant)",
+        "💸 CALLs Baratos (Capital Pequeño)",
     ]
 )
 
@@ -361,8 +362,12 @@ if tipo_mercado == "📈 Análisis Individual (NY / MX)":
         simbolo = opciones_mx.get(st.sidebar.selectbox("Empresa:", list(opciones_mx.keys())), "")
     else:
         simbolo = st.sidebar.text_input("Símbolo:", "AMD").upper()
-    temporalidad = st.sidebar.selectbox(
-        "Temporalidad (Velas):", ["1 Hora", "4 Horas", "Diario", "Semanal", "Mensual"], index=2
+    # select_slider en vez de selectbox: el dropdown se cortaba al
+    # quedar al fondo del sidebar sin posibilidad de scroll
+    temporalidad = st.sidebar.select_slider(
+        "Temporalidad (Velas):",
+        options=["1 Hora", "4 Horas", "Diario", "Semanal", "Mensual"],
+        value="Diario",
     )
 
 elif tipo_mercado == "🪙 Criptomonedas":
@@ -379,8 +384,10 @@ elif tipo_mercado == "🪙 Criptomonedas":
         if seleccion == "✍️ Búsqueda Manual"
         else opciones_cripto.get(seleccion, "")
     )
-    temporalidad = st.sidebar.selectbox(
-        "Temporalidad (Velas):", ["1 Hora", "4 Horas", "Diario", "Semanal", "Mensual"], index=2
+    temporalidad = st.sidebar.select_slider(
+        "Temporalidad (Velas):",
+        options=["1 Hora", "4 Horas", "Diario", "Semanal", "Mensual"],
+        value="Diario",
     )
 
     st.sidebar.markdown("---")
@@ -554,7 +561,21 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
         col1.metric("Precio Actual",   f"${precio_actual:,.2f}")
         col2.metric("T. Latino: Monitor", datos['direccion_monitor'])
         col3.metric("SMC: EMA 200",    f"${datos['ema_200']:,.2f}" if datos['ema_200'] > 0 else "N/A")
-        col4.metric("📊 Mercado",      "Renta Variable" if "Bolsa" in tipo_mercado else "Cripto")
+        if "Cripto" in tipo_mercado:
+            col4.metric("🌐 Sentimiento Macro", obtener_sentimiento_macro())
+        else:
+            col4.metric("📊 Mercado", "Renta Variable")
+
+        # --- ⏰ Reloj del Ciclo Halving (restaurado del cerebro viejo) ---
+        if "Cripto" in tipo_mercado:
+            semanas_h, fase_h, color_h = calcular_fase_ciclo()
+            st.markdown(f"""
+            <div style="padding:15px;border-radius:5px;background-color:rgba(255,255,255,0.05);
+                        border-left:5px solid #F23645;margin-bottom:10px;">
+                <h4 style="margin:0;padding:0;">{color_h} Reloj del Ciclo Halving (Semana +{semanas_h}w)</h4>
+                <p style="margin:5px 0 0 0;font-size:14px;opacity:0.8;"><b>Fase Actual:</b> {fase_h}</p>
+            </div>
+            """, unsafe_allow_html=True)
 
         st.write(
             f"**T. Latino:** ADX {datos['adx_actual']:.2f} ({datos['pendiente_adx']}) | "
@@ -589,10 +610,10 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
             <div style="padding:12px;border-radius:8px;background-color:rgba(255,255,255,0.05);
                         border:1px solid rgba(255,255,255,0.1);margin-top:5px;margin-bottom:15px;">
                 <div style="font-size:14px;display:flex;justify-content:space-around;flex-wrap:wrap;gap:10px;">
-                    <div><span style="color:#FF9800;font-weight:bold;">——</span> <b>Halving</b></div>
-                    <div><span style="color:#089981;font-weight:bold;">——</span> <b>Profit Start</b></div>
-                    <div><span style="color:#F23645;font-weight:bold;">——</span> <b>Profit End</b></div>
-                    <div><span style="color:#FFD700;font-weight:bold;">——</span> <b>DCA Start</b></div>
+                    <div><span style="color:#FF9800;font-weight:bold;">- -</span> <b>Halving</b> (0w)</div>
+                    <div><span style="color:#089981;font-weight:bold;">——</span> <b>Profit Start</b> (+40w)</div>
+                    <div><span style="color:#F23645;font-weight:bold;">——</span> <b>Profit End</b> (+77w)</div>
+                    <div><span style="color:#FFD700;font-weight:bold;">——</span> <b>DCA Start</b> (+135w)</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -791,7 +812,8 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
     st.header("🎯 Radar de Opciones Institucional")
     st.caption(
         "Escanea múltiples activos en paralelo. "
-        "Score 0–100 por horizonte: 🟢 ≥65 setup activo · 🟡 40-64 monitorear · 🔴 <40 sin señal."
+        "Score 0–100 por horizonte: 🟢 ≥65 setup activo · 🟡 40-64 monitorear · 🔴 <40 sin señal. "
+        "El umbral de disparo de señales BUY se ajusta en el sidebar."
     )
 
     # ── Sidebar: configuración del radar
@@ -811,6 +833,16 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
         lista_radar = [t.strip().upper() for t in tickers_raw.split(",") if t.strip()]
     else:
         lista_radar = UNIVERSOS_RADAR[universo_sel]
+
+    umbral_radar = st.sidebar.slider(
+        "🎚️ Umbral de señal (score mínimo):",
+        min_value=40, max_value=80, value=55, step=5,
+        help=(
+            "Score necesario para disparar BUY CALL/PUT. El score máximo teórico es ~89, "
+            "así que 65+ exige confluencia casi perfecta. Con 55 detecta setups sólidos. "
+            "Scores a menos de 10 puntos del umbral aparecen como LEAN (casi disparan)."
+        ),
+    )
 
     st.sidebar.info(
         f"**{len(lista_radar)} activos** a escanear.\n\n"
@@ -832,6 +864,7 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
             df_quant, df_swing, fig_gamma, reporte_ia, raw, contexto_macro = ejecutar_radar_opciones(
                 lista_radar,
                 gemini_api_key=GEMINI_API_KEY,
+                umbral_senal=umbral_radar,
             )
             prog.progress(100, text="Análisis completado.")
 
@@ -852,15 +885,18 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
               &nbsp;|&nbsp; QQQ {contexto_macro.get('qqq_ret3d',0):+.2f}% (3d)
             </div>""", unsafe_allow_html=True)
 
-            # ── Métricas resumen
-            señales_call = (df_swing["Señal"].str.contains("CALL")).sum() if not df_swing.empty else 0
-            señales_put  = (df_swing["Señal"].str.contains("PUT")).sum()  if not df_swing.empty else 0
-            señales_wait = (df_swing["Señal"].str.contains("WAIT")).sum() if not df_swing.empty else 0
+            # ── Métricas resumen (BUY firme vs LEAN casi-señal)
+            if not df_swing.empty:
+                señales_buy  = (df_swing["Señal"].str.contains("BUY")).sum()
+                señales_lean = (df_swing["Señal"].str.contains("LEAN")).sum()
+                señales_wait = (df_swing["Señal"].str.contains("WAIT")).sum()
+            else:
+                señales_buy = señales_lean = señales_wait = 0
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Activos escaneados", len(df_quant) if not df_quant.empty else 0)
-            m2.metric("🟢 BUY CALL",  señales_call)
-            m3.metric("🔴 BUY PUT",   señales_put)
-            m4.metric("🟡 WAIT",      señales_wait)
+            m2.metric("🟢 Señales BUY",  señales_buy)
+            m3.metric("🟩 LEAN (casi)",  señales_lean)
+            m4.metric("🟡 WAIT",         señales_wait)
 
             st.markdown("---")
 
@@ -942,4 +978,102 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
                 st.info(reporte_ia)
                 if st.button("📤 Enviar reporte a Telegram"):
                     enviar_alerta_telegram(f"🎯 *Radar Opciones v3 — {lider_nombre}*\n\n{reporte_ia}")
+
+
+# ==========================================
+# 💸 MÓDULO: CALLS BARATOS (CAPITAL PEQUEÑO)
+# ==========================================
+# Encuentra contratos CALL concretos que caben
+# en un presupuesto pequeño y son operables:
+# liquidez real, spread razonable y delta viable.
+# Datos: Yahoo Finance (los mismos que ve Webull).
+# ==========================================
+
+UNIVERSOS_BARATOS = {
+    "💸 Acciones baratas líquidas (< USD 30)": [
+        "F", "NIO", "SOFI", "AAL", "T", "PFE", "VALE", "ITUB",
+        "MARA", "RIOT", "LCID", "RIVN", "SNAP", "CCL", "PLUG",
+        "GRAB", "OPEN", "BBAI", "CHPT", "NOK",
+    ],
+    "🔥 Alta liquidez (contratos OTM baratos)": [
+        "SPY", "QQQ", "AAPL", "AMD", "INTC", "PLTR", "COIN",
+        "TSLA", "NVDA", "IBIT", "GLD", "XLF", "EEM",
+    ],
+    "✍️ Lista personalizada": [],
+}
+
+if tipo_mercado == "💸 CALLs Baratos (Capital Pequeño)":
+    st.header("💸 Buscador de CALLs Baratos")
+    st.caption(
+        "Contratos CALL concretos que caben en tu presupuesto y son **operables de verdad**: "
+        "bid/ask activos, spread ≤ 35%, Open Interest real y delta ≥ 0.10 (sin loterías). "
+        "Datos de Yahoo Finance (~15 min de retraso) — la misma cadena de opciones que muestra Webull."
+    )
+
+    # ── Sidebar: configuración
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("⚙️ Configuración del Buscador")
+
+    presupuesto = st.sidebar.slider(
+        "💵 Presupuesto máx. por contrato (USD):",
+        min_value=25, max_value=500, value=100, step=25,
+        help="Costo total del contrato = prima (ask) × 100 acciones.",
+    )
+    dte_rango = st.sidebar.slider(
+        "📅 Días al vencimiento (DTE):",
+        min_value=7, max_value=120, value=(14, 60),
+        help="Menos de 14d: theta te come rápido. Más de 60d: prima más cara pero más tiempo para que funcione.",
+    )
+    oi_minimo = st.sidebar.select_slider(
+        "🌊 Open Interest mínimo:", options=[25, 50, 100, 300, 500], value=50,
+        help="Contratos abiertos: más OI = más fácil entrar y salir a buen precio.",
+    )
+
+    universo_b = st.sidebar.selectbox("Universo:", list(UNIVERSOS_BARATOS.keys()))
+    if universo_b == "✍️ Lista personalizada":
+        tickers_b_raw = st.sidebar.text_area(
+            "Tickers (separados por coma):", value="F, NIO, SOFI, AAL, SNAP", height=90,
+        )
+        lista_baratos = [t.strip().upper() for t in tickers_b_raw.split(",") if t.strip()]
+    else:
+        lista_baratos = UNIVERSOS_BARATOS[universo_b]
+
+    st.write(f"**Universo:** {universo_b} — `{', '.join(lista_baratos)}`")
+    st.markdown("---")
+
+    if st.button("🔍 Buscar CALLs dentro del presupuesto", type="primary", width="stretch"):
+        with st.spinner(f"Escaneando cadenas de opciones de {len(lista_baratos)} activos..."):
+            df_baratos = escanear_calls_baratos(
+                lista_baratos,
+                presupuesto_max=presupuesto,
+                dte_min=dte_rango[0],
+                dte_max=dte_rango[1],
+                oi_min=oi_minimo,
+            )
+
+        if df_baratos.empty:
+            st.warning(
+                "⚠️ Ningún contrato cumple los filtros. Prueba: subir el presupuesto, "
+                "ampliar el rango DTE o bajar el Open Interest mínimo."
+            )
+        else:
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Contratos encontrados", len(df_baratos))
+            costo_min = df_baratos["💵 Costo"].str.replace("$", "").str.replace(",", "").astype(float)
+            m2.metric("Más barato", f"${costo_min.min():,.0f}")
+            m3.metric("Score máximo", int(df_baratos["Score"].max()))
+
+            st.dataframe(
+                df_baratos, width="stretch", hide_index=True,
+                column_config={
+                    "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100),
+                },
+            )
+            st.caption(
+                "**Cómo leer la tabla:** 💵 Costo = lo que pagas por 1 contrato (prima × 100). "
+                "Breakeven = precio que debe alcanzar la acción al vencimiento para no perder. "
+                "% al BE = cuánto tiene que subir el subyacente. "
+                "Delta ≈ probabilidad aproximada de terminar ITM y sensibilidad al precio. "
+                "El Score premia delta cercana a 0.40, breakeven cercano, spread bajo y OI alto."
+            )
 

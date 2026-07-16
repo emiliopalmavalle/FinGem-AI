@@ -2,6 +2,32 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 
+# 🗺️ Mapa del Ciclo Halving BTC (fechas históricas + proyección del ciclo actual).
+# Se dibuja solo en gráficos semanales de cripto.
+CICLOS_HALVING = [
+    {"halving": "2020-05-11", "start": "2021-02-15", "end": "2021-11-01", "dca": "2022-12-12"},
+    {"halving": "2024-04-19", "start": "2025-01-24", "end": "2025-10-10", "dca": "2026-11-20"},
+]
+_COLORES_CICLO = {"halving": "#FF9800", "start": "#089981", "end": "#F23645", "dca": "#FFD700"}
+
+
+def _dibujar_ciclo_halving(fig):
+    """Dibuja las líneas verticales del ciclo halving en la fila de precio.
+
+    Usa timestamps en milisegundos: add_vline con datetime directo
+    tiene inconsistencias conocidas en ejes de velas de Plotly.
+    """
+    for ciclo in CICLOS_HALVING:
+        for evento, fecha in ciclo.items():
+            x_ms = pd.to_datetime(fecha).timestamp() * 1000
+            fig.add_vline(
+                x=x_ms, line_width=2, opacity=0.7,
+                line_dash="dot" if evento == "halving" else "solid",
+                line_color=_COLORES_CICLO[evento],
+                row=1, col=1,
+            )
+
+
 def construir_grafico_tecnico(hist, ha_df, ema_200, temporalidad, tipo_mercado, toggles):
     show_emas = toggles.get("EMAs", True)
     show_utbot = toggles.get("UT_Bot", False)
@@ -61,8 +87,19 @@ def construir_grafico_tecnico(hist, ha_df, ema_200, temporalidad, tipo_mercado, 
         fig.add_hline(y=40, line_dash="dash", line_color="red", row=3, col=1, opacity=0.5)
         fig.add_hline(y=-40, line_dash="dash", line_color="green", row=3, col=1, opacity=0.5)
 
+    # 🗺️ Ciclo Halving: líneas verticales solo en semanal + cripto
+    mostrar_ciclo = temporalidad == "Semanal" and "Cripto" in tipo_mercado
+    if mostrar_ciclo:
+        _dibujar_ciclo_halving(fig)
+
     # Limites y Layout
-    fecha_inicio, fecha_fin = hist.index[max(0, len(hist)-100)], hist.index[-1] + pd.Timedelta(days=5) # Zoom inteligente automático
+    if mostrar_ciclo:
+        # 🔮 Modo Oráculo: 7 años hacia atrás (cubre ciclo 2020) y
+        # 10 meses hacia el futuro para ver el próximo DCA Start
+        fecha_inicio = max(hist.index[-1] - pd.DateOffset(years=7), hist.index[0])
+        fecha_fin    = hist.index[-1] + pd.DateOffset(months=10)
+    else:
+        fecha_inicio, fecha_fin = hist.index[max(0, len(hist)-100)], hist.index[-1] + pd.Timedelta(days=5) # Zoom inteligente automático
     
     fig.update_layout(
         template="plotly_dark", paper_bgcolor="#131722", plot_bgcolor="#131722", 

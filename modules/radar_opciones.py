@@ -48,6 +48,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
+from math import log, sqrt, erf
 import concurrent.futures
 import warnings
 from modules.gemini_client import llamar_gemini
@@ -88,8 +89,11 @@ PESOS_SWING = {
 VERDE    = 65
 AMARILLO = 40
 
-# Umbral señal direccional
-UMBRAL_SENAL = 65
+# Umbral señal direccional (default; la UI puede pasar otro valor).
+# Nota: el score máximo teórico es ~89, por lo que 65 exige confluencia
+# casi perfecta. Con 55 el radar detecta setups buenos sin ser trivial.
+UMBRAL_SENAL = 55
+LEAN_MARGEN  = 10   # score >= umbral - margen → señal "LEAN" (casi dispara)
 OI_MINIMO    = 500
 
 # Umbral mínimo de volumen para PCR (evita distorsión por valores marginales)
@@ -185,7 +189,8 @@ def _calcular_indicadores_tecnicos(hist: pd.DataFrame) -> dict:
     return r
 
 
-def _score_swing_ticker(hist: pd.DataFrame, datos_opciones: dict | None) -> dict:
+def _score_swing_ticker(hist: pd.DataFrame, datos_opciones: dict | None,
+                        umbral: int = UMBRAL_SENAL) -> dict:
     """Score Swing 0-100 por dirección + señal BUY CALL / BUY PUT / WAIT.
 
     Todos los cálculos vectorizados; solo lee los valores finales (.iloc[-1]).
@@ -339,11 +344,14 @@ def _score_swing_ticker(hist: pd.DataFrame, datos_opciones: dict | None) -> dict
     elif ema8 > ema21: cruce_str = "Alcista (EMA 8 > 21)"
     else:              cruce_str = "Bajista (EMA 8 < 21)"
 
-    # ── Señal
-    if not liquidez_ok:                                              senal = "ILIQUIDO"
-    elif score_alcista >= UMBRAL_SENAL and score_alcista > score_bajista: senal = "BUY CALL"
-    elif score_bajista >= UMBRAL_SENAL and score_bajista > score_alcista: senal = "BUY PUT"
-    else:                                                            senal = "WAIT"
+    # ── Señal (con nivel intermedio LEAN: casi dispara, monitorear de cerca)
+    lean_min = umbral - LEAN_MARGEN
+    if not liquidez_ok:                                                   senal = "ILIQUIDO"
+    elif score_alcista >= umbral and score_alcista > score_bajista:       senal = "BUY CALL"
+    elif score_bajista >= umbral and score_bajista > score_alcista:       senal = "BUY PUT"
+    elif score_alcista >= lean_min and score_alcista > score_bajista:     senal = "LEAN CALL"
+    elif score_bajista >= lean_min and score_bajista > score_alcista:     senal = "LEAN PUT"
+    else:                                                                 senal = "WAIT"
 
     # ── Razones para el prompt IA
     razones = []
@@ -544,13 +552,14 @@ def _analizar_ticker(args: tuple) -> dict | None:
     """Procesa un ticker completo: Capa 1 (Quant) + Capa 2 (Swing).
 
     Args:
-        args: tupla (ticker_sym, hist_diario) donde hist_diario es el
-              DataFrame de precios pre-descargado en batch.
+        args: tupla (ticker_sym, hist_diario, umbral) donde hist_diario es
+              el DataFrame de precios pre-descargado en batch y umbral es
+              el score mínimo para disparar señal direccional.
 
     Returns:
         dict con resultados por horizonte y swing_scan, o None si falla.
     """
-    ticker_sym, hist_diario = args
+    ticker_sym, hist_diario, umbral = args
     try:
         t = yf.Ticker(ticker_sym)
         fechas = t.options
@@ -568,7 +577,8 @@ def _analizar_ticker(args: tuple) -> dict | None:
 
         datos_opts = res.get("scalping") or res.get("swing")
         res["swing_scan"] = _score_swing_ticker(
-            hist_diario if hist_diario is not None else pd.DataFrame(), datos_opts
+            hist_diario if hist_diario is not None else pd.DataFrame(), datos_opts,
+            umbral=umbral,
         )
         return res
     except Exception as e:
@@ -649,11 +659,12 @@ def _construir_tabla_scores(resultados: list, contexto_macro: dict):
         senal = sc.get("senal", "N/A")
 
         # Ajuste macro: degradar señal si va contra el mercado
-        if sesgo == "bajista"  and senal == "BUY CALL": senal = "WAIT (contra macro)"
-        elif sesgo == "alcista" and senal == "BUY PUT":  senal = "WAIT (contra macro)"
+        if sesgo == "bajista"  and senal in ("BUY CALL", "LEAN CALL"): senal = "WAIT (contra macro)"
+        elif sesgo == "alcista" and senal in ("BUY PUT", "LEAN PUT"):  senal = "WAIT (contra macro)"
 
         # Emojis de señal
         emoji_map = {"BUY CALL": "🟢 BUY CALL", "BUY PUT": "🔴 BUY PUT",
+                     "LEAN CALL": "🟩 LEAN CALL", "LEAN PUT": "🟥 LEAN PUT",
                      "WAIT": "🟡 WAIT", "ILIQUIDO": "⚫ ILÍQUIDO",
                      "WAIT (contra macro)": "🟡 WAIT ⚠️"}
         senal_display = emoji_map.get(senal, f"🟡 {senal}")
@@ -888,7 +899,8 @@ Maximo 450 palabras. Niveles numericos exactos. Sin frases genericas.
 # FUNCIÓN PRINCIPAL PÚBLICA
 # ══════════════════════════════════════════════════════
 
-def ejecutar_radar_opciones(lista_tickers: list, gemini_api_key: str = "") -> tuple:
+def ejecutar_radar_opciones(lista_tickers: list, gemini_api_key: str = "",
+                            umbral_senal: int = UMBRAL_SENAL) -> tuple:
     """Punto de entrada principal del radar.
 
     Orquesta el pipeline completo: contexto macro → descarga batch →
@@ -897,6 +909,8 @@ def ejecutar_radar_opciones(lista_tickers: list, gemini_api_key: str = "") -> tu
     Args:
         lista_tickers: lista de símbolos a escanear.
         gemini_api_key: API key de Gemini para el reporte IA.
+        umbral_senal: score mínimo (0-100) para disparar BUY CALL/PUT;
+                      score >= umbral-10 genera señal LEAN (casi dispara).
 
     Returns:
         tuple de (df_quant, df_swing, fig_gamma, reporte_ia, raw_results, contexto).
@@ -908,7 +922,7 @@ def ejecutar_radar_opciones(lista_tickers: list, gemini_api_key: str = "") -> tu
     historiales = _descargar_historiales(lista_tickers)
 
     # 3. Análisis paralelo
-    args = [(sym, historiales.get(sym, pd.DataFrame())) for sym in lista_tickers]
+    args = [(sym, historiales.get(sym, pd.DataFrame()), umbral_senal) for sym in lista_tickers]
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         todos = list(ex.map(_analizar_ticker, args))
 
@@ -943,3 +957,183 @@ def ejecutar_radar_opciones(lista_tickers: list, gemini_api_key: str = "") -> tu
 
     raw = {r["ticker"]: r for r in resultados}
     return df_quant, df_swing, fig_gamma, reporte_ia, raw, contexto
+
+
+# ══════════════════════════════════════════════════════
+# 💸 BUSCADOR DE CALLS BARATOS (CAPITAL PEQUEÑO)
+# ══════════════════════════════════════════════════════
+# Encuentra contratos CALL concretos cuyo costo total
+# (prima × 100) cabe en un presupuesto pequeño, filtrando
+# por liquidez y spread para que sean operables de verdad.
+# Datos: cadenas de Yahoo Finance (mismos que muestra Webull).
+# ══════════════════════════════════════════════════════
+
+def _delta_call_bs(spot: float, strike: float, dte_dias: int, iv: float,
+                   r: float = 0.04) -> float | None:
+    """Delta Black-Scholes de un CALL (Yahoo no publica greeks).
+
+    Args:
+        spot: precio del subyacente.
+        strike: strike del contrato.
+        dte_dias: días al vencimiento.
+        iv: volatilidad implícita anualizada (ej. 0.45 = 45%).
+        r: tasa libre de riesgo aproximada.
+
+    Returns:
+        Delta en [0, 1] o None si los insumos no son válidos.
+    """
+    if spot <= 0 or strike <= 0 or iv <= 0 or dte_dias <= 0:
+        return None
+    T  = dte_dias / 365.0
+    d1 = (log(spot / strike) + (r + iv * iv / 2) * T) / (iv * sqrt(T))
+    return 0.5 * (1 + erf(d1 / sqrt(2)))
+
+
+def _procesar_calls_baratos_ticker(args: tuple) -> list[dict]:
+    """Escanea un ticker y devuelve los CALLs que caben en el presupuesto.
+
+    Args:
+        args: (ticker, presupuesto_max, dte_min, dte_max, oi_min).
+
+    Returns:
+        Lista de dicts, uno por contrato viable (puede ser vacía).
+    """
+    ticker, presupuesto, dte_min, dte_max, oi_min = args
+    contratos = []
+    try:
+        t = yf.Ticker(ticker)
+        fechas = t.options
+        if not fechas:
+            return []
+        spot = getattr(t.fast_info, "last_price", None) or 0.0
+        if not spot:
+            return []
+
+        hoy = datetime.now()
+        fechas_ok = [
+            f for f in fechas
+            if dte_min <= (datetime.strptime(f, "%Y-%m-%d") - hoy).days <= dte_max
+        ][:3]  # máx 3 vencimientos por ticker para mantener velocidad
+
+        for fecha in fechas_ok:
+            dte = (datetime.strptime(fecha, "%Y-%m-%d") - hoy).days
+            try:
+                calls = t.option_chain(fecha).calls
+            except Exception:
+                continue
+
+            # Strikes operables: desde ligeramente ITM hasta +25% OTM
+            c = calls[
+                (calls["strike"] >= spot * 0.90) & (calls["strike"] <= spot * 1.25) &
+                (calls["ask"] > 0) & (calls["bid"] > 0)
+            ].copy()
+            if c.empty:
+                continue
+
+            c["openInterest"] = c["openInterest"].fillna(0)
+            c["volume"]       = c["volume"].fillna(0)
+            c["costo"]        = c["ask"] * 100
+            c["mid"]          = (c["bid"] + c["ask"]) / 2
+            c["spread_pct"]   = (c["ask"] - c["bid"]) / c["mid"] * 100
+
+            c = c[
+                (c["costo"] <= presupuesto) &
+                (c["openInterest"] >= oi_min) &
+                (c["spread_pct"] <= 35)
+            ]
+
+            for _, fila in c.iterrows():
+                iv    = float(fila.get("impliedVolatility", 0) or 0)
+                delta = _delta_call_bs(spot, fila["strike"], dte, iv)
+                if delta is None or delta < 0.10:
+                    continue  # lotería pura: casi sin probabilidad, descartar
+
+                breakeven = fila["strike"] + fila["ask"]
+                pct_be    = (breakeven / spot - 1) * 100
+
+                # ── Score de viabilidad 0-100
+                s_delta  = max(0, 100 - abs(delta - 0.40) * 250)       # sweet spot ~0.40
+                sp       = fila["spread_pct"]
+                s_spread = 90 if sp <= 10 else 60 if sp <= 20 else 35 if sp <= 30 else 10
+                oi       = fila["openInterest"]
+                s_oi     = 90 if oi >= 1000 else 70 if oi >= 300 else 50 if oi >= 100 else 30
+                s_be     = 90 if pct_be <= 3 else 70 if pct_be <= 6 else 45 if pct_be <= 10 else 20
+                score    = int(s_delta * 0.30 + s_spread * 0.20 + s_oi * 0.20 + s_be * 0.30)
+
+                contratos.append({
+                    "ticker":     ticker,
+                    "spot":       spot,
+                    "vencimiento": fecha,
+                    "dte":        dte,
+                    "strike":     fila["strike"],
+                    "prima_ask":  fila["ask"],
+                    "costo":      fila["costo"],
+                    "breakeven":  breakeven,
+                    "pct_be":     pct_be,
+                    "delta":      delta,
+                    "oi":         int(oi),
+                    "volumen":    int(fila["volume"]),
+                    "spread_pct": fila["spread_pct"],
+                    "iv_pct":     iv * 100,
+                    "score":      score,
+                })
+        return contratos
+    except Exception:
+        return []
+
+
+def escanear_calls_baratos(
+    lista_tickers: list[str],
+    presupuesto_max: float = 100.0,
+    dte_min: int = 14,
+    dte_max: int = 60,
+    oi_min: int = 50,
+    top_n: int = 25,
+) -> pd.DataFrame:
+    """Busca CALLs concretos operables con capital pequeño.
+
+    Filtros de viabilidad (no solo baratura):
+      - Costo total del contrato (ask × 100) dentro del presupuesto
+      - Bid y Ask válidos con spread <= 35% (que se pueda entrar Y salir)
+      - Open Interest mínimo (que haya mercado real)
+      - Delta >= 0.10 (descarta loterías sin probabilidad)
+
+    Score 0-100 pondera: cercanía a delta 0.40 (30%), % de movimiento
+    necesario para breakeven (30%), spread (20%) y Open Interest (20%).
+
+    Args:
+        lista_tickers: universo a escanear.
+        presupuesto_max: costo máximo por contrato en USD.
+        dte_min/dte_max: ventana de días al vencimiento.
+        oi_min: Open Interest mínimo por contrato.
+        top_n: máximo de filas a devolver.
+
+    Returns:
+        DataFrame ordenado por score con columnas listas para la UI.
+    """
+    args = [(sym, presupuesto_max, dte_min, dte_max, oi_min) for sym in lista_tickers]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        resultados = list(ex.map(_procesar_calls_baratos_ticker, args))
+
+    todos = [c for sublista in resultados for c in sublista]
+    if not todos:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(todos).sort_values("score", ascending=False).head(top_n)
+
+    return pd.DataFrame({
+        "Ticker":       df["ticker"],
+        "Score":        df["score"],
+        "Spot":         df["spot"].map("${:,.2f}".format),
+        "Vencimiento":  df["vencimiento"] + " (" + df["dte"].astype(str) + "d)",
+        "Strike":       df["strike"].map("${:,.2f}".format),
+        "Prima":        df["prima_ask"].map("${:,.2f}".format),
+        "💵 Costo":     df["costo"].map("${:,.0f}".format),
+        "Breakeven":    df["breakeven"].map("${:,.2f}".format),
+        "% al BE":      df["pct_be"].map("{:+.1f}%".format),
+        "Delta":        df["delta"].map("{:.2f}".format),
+        "OI":           df["oi"].map("{:,}".format),
+        "Volumen":      df["volumen"].map("{:,}".format),
+        "Spread":       df["spread_pct"].map("{:.0f}%".format),
+        "IV":           df["iv_pct"].map("{:.0f}%".format),
+    }).reset_index(drop=True)
