@@ -772,7 +772,28 @@ elif tipo_mercado == "🧱 Flujo de Opciones (Derivados)" and simbolo:
 
     if st.button(f"🕵️‍♂️ Extraer Flujo Institucional para {simbolo}", type="primary"):
         with st.spinner(f"Escaneando 4 horizontes temporales y procesando IA Quant..."):
-            df_muros, reporte_ia, fig_visual = escanear_flujo_institucional(simbolo)
+            df_muros, reporte_ia, fig_visual, niveles_dia = escanear_flujo_institucional(simbolo)
+
+        # ── 🎯 Niveles operables del día (vencimiento 1-3d)
+        if niveles_dia:
+            st.markdown(
+                f"#### 🎯 Niveles del Día — vencimiento {niveles_dia.get('vencimiento', 'N/A')} "
+                f"({niveles_dia.get('dte', '?')} DTE)"
+            )
+            n1, n2, n3, n4 = st.columns(4)
+            _f = lambda v: f"USD {v:,.2f}" if v is not None else "N/A"
+            n1.metric("🛡️ Soporte (Put Wall)",      _f(niveles_dia.get("put_wall")))
+            n2.metric("🧱 Resistencia (Call Wall)", _f(niveles_dia.get("call_wall")))
+            n3.metric("🧲 Max Pain (imán)",         _f(niveles_dia.get("max_pain")))
+            pcr_dia = niveles_dia.get("pcr")
+            n4.metric(
+                "PCR del vencimiento",
+                f"{pcr_dia:.2f}" if pcr_dia is not None else "N/A",
+                delta=("Bajista" if pcr_dia > 1.1 else "Alcista" if pcr_dia < 0.8 else "Neutral") if pcr_dia else None,
+                delta_color="inverse",
+            )
+            if niveles_dia.get("flujo_fresco"):
+                st.warning("🔥 **Flujo fresco detectado hoy:** " + " · ".join(niveles_dia["flujo_fresco"]))
 
         if fig_visual is not None:
             st.plotly_chart(fig_visual, width="stretch", config={'displayModeBar': False})
