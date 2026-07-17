@@ -8,7 +8,7 @@ from deep_translator import GoogleTranslator
 # ==========================================
 # 📦 IMPORTACIÓN DE MÓDULOS (ARQUITECTURA)
 # ==========================================
-from modules.radar_acciones import escaneo_institucional_dual
+from modules.radar_acciones import escaneo_institucional_dual, buscar_joyas_ocultas
 from modules.radar_derivados import escanear_flujo_institucional
 from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_radar, escanear_calls_baratos
 from modules.ai_client import configurar_ia, llamar_ia, mostrar_estado_ia_sidebar
@@ -462,14 +462,14 @@ elif tipo_mercado == "🌐 Escáner Global (Value/Momentum)":
             "WALMEX.MX, GMEXICOB.MX, AMXB.MX, GFNORTEO.MX, FEMSAUBD.MX, "
             "CEMEXCPO.MX, GAPB.MX, ASURB.MX, BIMBOA.MX, AC.MX"
         ),
-        "🔍 Búsqueda Profunda (Finviz — Joyas Ocultas)": "AUTO",
+        "🔍 Búsqueda Profunda (Joyas Ocultas)": "AUTO",
         "✍️ Lista Personalizada": "",
     }
 
     seleccion_universo = st.radio("Selecciona el Universo a Escanear:", list(universos.keys()))
 
-    if seleccion_universo == "🔍 Búsqueda Profunda (Finviz — Joyas Ocultas)":
-        st.info("🤖 **Filtros Quant Activos:** P/E < 20, EPS positivo, Volumen > 500K, Precio sobre SMA 200.")
+    if seleccion_universo == "🔍 Búsqueda Profunda (Joyas Ocultas)":
+        st.info("🤖 **Filtros Quant Activos:** P/E < 20, crecimiento EPS positivo, Volumen > 500K, Precio > USD 5, solo NYSE/NASDAQ.")
         tickers_input = ""
     else:
         tickers_default = universos[seleccion_universo]
@@ -480,31 +480,13 @@ elif tipo_mercado == "🌐 Escáner Global (Value/Momentum)":
     if st.button("🚀 Iniciar Barrido Inteligente"):
         lista_tickers = []
 
-        if seleccion_universo == "🔍 Búsqueda Profunda (Finviz — Joyas Ocultas)":
-            with st.spinner("🕵️‍♂️ Extrayendo activos desde Finviz..."):
-                try:
-                    import re
-                    url_finviz = (
-                        "https://finviz.com/screener.ashx?v=111"
-                        "&f=fa_epsyoy_pos,fa_pe_u20,sh_curvol_o500,ta_sma200_pa"
-                    )
-                    headers = {
-                        'User-Agent': (
-                            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                            'AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
-                        ),
-                        'Accept': 'text/html,application/xhtml+xml',
-                    }
-                    respuesta = requests.get(url_finviz, headers=headers, timeout=10)
-                    tickers_encontrados = re.findall(r'quote\.ashx\?t=([A-Z]+)', respuesta.text)
-                    lista_tickers = list(set(tickers_encontrados))[:25]
-
-                    if lista_tickers:
-                        st.success(f"✅ {len(lista_tickers)} activos extraídos. Iniciando motor Quant...")
-                    else:
-                        st.warning("⚠️ Finviz no arrojó resultados para estos filtros hoy.")
-                except Exception as e:
-                    st.error(f"❌ Error al conectar con Finviz: {e}")
+        if seleccion_universo == "🔍 Búsqueda Profunda (Joyas Ocultas)":
+            with st.spinner("🕵️‍♂️ Buscando joyas con el screener de Yahoo..."):
+                lista_tickers = buscar_joyas_ocultas(max_resultados=25)
+                if lista_tickers:
+                    st.success(f"✅ {len(lista_tickers)} activos encontrados. Iniciando motor Quant...")
+                else:
+                    st.warning("⚠️ El screener no arrojó resultados. Intenta de nuevo en unos minutos.")
         else:
             lista_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 

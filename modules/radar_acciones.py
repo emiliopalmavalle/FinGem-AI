@@ -179,6 +179,33 @@ def procesar_un_ticker(ticker: str) -> Optional[dict]:
         return None
 
 
+def buscar_joyas_ocultas(max_resultados: int = 25) -> list[str]:
+    """Búsqueda profunda de "joyas ocultas" con el screener nativo de Yahoo.
+
+    Reemplaza el scraping de Finviz (su tabla ahora se renderiza con
+    JavaScript y el HTML ya no trae tickers). Mismos filtros Quant:
+    P/E < 20, crecimiento EPS positivo, volumen > 500K, precio > USD 5
+    y solo NYSE/NASDAQ (evita penny stocks OTC).
+
+    Returns:
+        Lista de símbolos ordenados por volumen (vacía si Yahoo falla).
+    """
+    try:
+        consulta = yf.EquityQuery('and', [
+            yf.EquityQuery('lt', ['peratio.lasttwelvemonths', 20]),
+            yf.EquityQuery('gt', ['epsgrowth.lasttwelvemonths', 0]),
+            yf.EquityQuery('gt', ['dayvolume', 500_000]),
+            yf.EquityQuery('gt', ['intradayprice', 5]),
+            yf.EquityQuery('is-in', ['exchange', 'NMS', 'NYQ']),
+        ])
+        respuesta = yf.screen(
+            consulta, sortField='dayvolume', sortAsc=False, size=max_resultados
+        )
+        return [q['symbol'] for q in respuesta.get('quotes', []) if q.get('symbol')]
+    except Exception:
+        return []
+
+
 def escaneo_institucional_dual(
     lista_tickers: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
