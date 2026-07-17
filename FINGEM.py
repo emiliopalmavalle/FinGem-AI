@@ -62,16 +62,23 @@ def analizar_con_gemini(
     # ── BOLSA (NY / MX)
     if "NY" in tipo_mercado or "MX" in tipo_mercado or "Análisis Individual" in tipo_mercado:
         prompt = f"""
-        Eres un analista financiero institucional. Analiza la acción: {simbolo}.
+        Eres un analista financiero institucional especializado en operativa de 1 a 3 días.
+        Analiza la acción: {simbolo}.
         - Precio actual: USD {precio_actual:.2f}
-        - Datos Técnicos y Fundamentales: {datos_extra}
+        - Datos Técnicos, Estructura y Niveles: {datos_extra}
         - Consenso de analistas: {recomendacion}
         - Noticias recientes: {textos_noticias}
 
         Genera un resumen ejecutivo en 3 puntos:
-        1. ⚙️ Acción del Precio: estructura técnica actual (EMAs, ADX, FVG).
-        2. 📊 Valoración Fundamental: contexto del consenso y noticias.
-        3. 💡 Veredicto Institucional: sesgo, entrada sugerida, Stop Loss y Take Profit con niveles USD exactos.
+        1. ⚙️ Acción del Precio: tendencia (EMAs, ADX, Monitor), momentum (RSI, RVOL, divergencias) y zonas de liquidez (FVG).
+        2. 📊 Valoración y Flujo: consenso, noticias y — si hay niveles de opciones — qué dicen los muros y el flujo fresco sobre el posicionamiento institucional.
+        3. 💡 Veredicto Institucional (1-3 días): sesgo direccional y plan operativo.
+
+        REGLAS PARA EL PLAN DEL PUNTO 3 (obligatorias):
+        - ENTRADA: anclada a un nivel real de la ESTRUCTURA (máx/mín 5-20 velas, high/low previo) o a un muro de opciones — nunca un número redondo inventado.
+        - STOP LOSS: aproximadamente 1.5x el ATR(14) desde la entrada, colocado del otro lado del nivel que protege (mínimo estructural o Put/Call Wall).
+        - TAKE PROFIT: antes del siguiente nivel de estructura o muro opuesto; indica el ratio riesgo/beneficio resultante.
+        - Si el flujo fresco de opciones contradice tu sesgo, adviértelo explícitamente.
 
         REGLA: Usa 'USD' en lugar del símbolo dólar. Directo y sin frases genéricas.
         """
@@ -677,7 +684,13 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
         if st.button(f"Generar Análisis ({temporalidad}) 🤖", type="primary"):
             with st.spinner("Ensamblando contexto y consultando Gemini..."):
 
-                # ── 1. Datos técnicos completos (como el cerebro viejo)
+                # ── 1. Datos técnicos completos: tendencia (EMAs/ADX) +
+                #       contexto operable (ATR, RSI, RVOL, estructura)
+                divergencia_txt = (
+                    "Divergencia ALCISTA reciente (posible giro arriba)" if datos.get('div_bull_reciente')
+                    else "Divergencia BAJISTA reciente (posible giro abajo)" if datos.get('div_bear_reciente')
+                    else "Sin divergencias"
+                )
                 datos_extra_str = (
                     f"Temporalidad: {temporalidad}. "
                     f"EMA 10: USD {datos['ema_10']:.2f}, "
@@ -686,8 +699,37 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                     f"ADX: {datos['adx_actual']:.2f} ({datos['pendiente_adx']}). "
                     f"Monitor: {datos['direccion_monitor']}. "
                     f"FVG Alcista: {datos['fvg_bullish']}. "
-                    f"FVG Bajista: {datos['fvg_bearish']}."
+                    f"FVG Bajista: {datos['fvg_bearish']}. "
+                    f"ATR(14): USD {datos['atr_14']:.2f} (volatilidad por vela). "
+                    f"RSI(14): {datos['rsi_14']:.1f}. "
+                    f"RVOL: {datos['rvol']:.1f}x su media de 20 velas. "
+                    f"{divergencia_txt}. "
+                    f"ESTRUCTURA — Máx/Mín 5 velas: USD {datos['max_5']:.2f} / USD {datos['min_5']:.2f}; "
+                    f"Máx/Mín 20 velas: USD {datos['max_20']:.2f} / USD {datos['min_20']:.2f}; "
+                    f"High/Low vela previa: USD {datos['high_prev']:.2f} / USD {datos['low_prev']:.2f}."
                 )
+
+                # ── 1b. Niveles de opciones (solo bolsa con opciones listadas):
+                #        dónde están posicionados los market makers
+                if "Individual" in tipo_mercado:
+                    try:
+                        tk_op = yf.Ticker(simbolo)
+                        fechas_op = tk_op.options
+                        if fechas_op:
+                            from modules.radar_derivados import calcular_niveles_dia, encontrar_fecha_daytrading
+                            fecha_op = encontrar_fecha_daytrading(fechas_op)
+                            niv_op = calcular_niveles_dia(tk_op.option_chain(fecha_op), precio_actual)
+                            _fo = lambda v: f"USD {v:.2f}" if v is not None else "N/A"
+                            datos_extra_str += (
+                                f" NIVELES DE OPCIONES (vencimiento {fecha_op}): "
+                                f"Soporte Put Wall {_fo(niv_op.get('put_wall'))}, "
+                                f"Resistencia Call Wall {_fo(niv_op.get('call_wall'))}, "
+                                f"Max Pain {_fo(niv_op.get('max_pain'))}, "
+                                f"PCR {round(niv_op['pcr'], 2) if niv_op.get('pcr') else 'N/A'}. "
+                                f"Flujo fresco hoy: {'; '.join(niv_op.get('flujo_fresco', [])) or 'ninguno'}."
+                            )
+                    except Exception:
+                        pass  # sin opciones o Yahoo falló: el análisis sigue sin este bloque
 
                 # ── 2. Sentimiento macro (Fear & Greed)
                 sentimiento_str = ""

@@ -246,13 +246,21 @@ def procesar_datos_tecnicos(hist: pd.DataFrame) -> dict:
         (hist['Close'] <= min_precio_reciente) &
         (hist['Monitor'] > min_monitor_reciente.shift(5))
     )
+    # Contraparte bajista: precio en máximo de 15 velas pero el Monitor
+    # ya no acompaña (techo con momentum decreciente)
+    max_precio_reciente  = hist['Close'].rolling(window=15).max()
+    max_monitor_reciente = hist['Monitor'].rolling(window=15).max()
+    hist['Div_Bearish'] = (
+        (hist['Close'] >= max_precio_reciente) &
+        (hist['Monitor'] < max_monitor_reciente.shift(5))
+    )
 
     # Gatillo Final: Cruce UT Bot + Fuerza + Confluencias
     cruce_buy  = (hist['Close'] > hist['UT_Bot_Stop']) & (hist['Close'].shift(1) <= hist['UT_Bot_Stop'].shift(1))
     cruce_sell = (hist['Close'] < hist['UT_Bot_Stop']) & (hist['Close'].shift(1) >= hist['UT_Bot_Stop'].shift(1))
 
     hist['Buy_Signal']  = cruce_buy  & (hist['ADX'] > 20) & (macro_bullish | hist['Toque_FVG_Bull'] | hist['Div_Bullish'])
-    hist['Sell_Signal'] = cruce_sell & (hist['ADX'] > 20) & (macro_bearish | hist['Toque_FVG_Bear'])
+    hist['Sell_Signal'] = cruce_sell & (hist['ADX'] > 20) & (macro_bearish | hist['Toque_FVG_Bear'] | hist['Div_Bearish'])
 
     # ------------------------------------------
     # 5. Detección FVG vectorizada
@@ -265,7 +273,49 @@ def procesar_datos_tecnicos(hist: pd.DataFrame) -> dict:
     ha_df = _calcular_heikin_ashi(hist)
 
     # ------------------------------------------
-    # 7. Extracción de valores finales para UI
+    # 7. Contexto operable para la IA
+    # ------------------------------------------
+    # Las EMAs y el ADX dicen HACIA DÓNDE va el precio; estos datos le dan
+    # a la IA el DÓNDE (estructura) y el CUÁNTO (ATR) para anclar
+    # entrada / stop / take profit en niveles reales, no inventados.
+
+    # ATR(14) — volatilidad real para dimensionar stops (ej. SL = 1.5×ATR)
+    rango_verdadero = pd.concat([
+        hist['High'] - hist['Low'],
+        (hist['High'] - hist['Close'].shift(1)).abs(),
+        (hist['Low']  - hist['Close'].shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    atr_14 = float(rango_verdadero.rolling(14).mean().iloc[-1])
+
+    # RSI(14) — Wilder
+    delta_c  = hist['Close'].diff()
+    ganancia = delta_c.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+    perdida  = (-delta_c.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+    rs       = ganancia / perdida.replace(0, np.nan)
+    rsi_14   = float((100 - 100 / (1 + rs)).iloc[-1])
+
+    # RVOL — robusto a vela en curso (máx entre vela actual y última completa)
+    vol_prom = hist['Volume'].iloc[-21:-1].mean()
+    if vol_prom > 0:
+        rvol = float(max(hist['Volume'].iloc[-1], hist['Volume'].iloc[-2]) / vol_prom)
+    else:
+        rvol = 1.0
+
+    # Estructura de precio: niveles donde hay liquidez real
+    # (velas completas: se excluye la vela en curso)
+    max_5  = float(hist['High'].iloc[-6:-1].max())
+    min_5  = float(hist['Low'].iloc[-6:-1].min())
+    max_20 = float(hist['High'].iloc[-21:-1].max())
+    min_20 = float(hist['Low'].iloc[-21:-1].min())
+    high_prev = float(hist['High'].iloc[-2])
+    low_prev  = float(hist['Low'].iloc[-2])
+
+    # Divergencias recientes (ventana de 5 velas del detector de mentiras)
+    div_bull_reciente = bool(hist['Div_Bullish'].iloc[-5:].any())
+    div_bear_reciente = bool(hist['Div_Bearish'].iloc[-5:].any())
+
+    # ------------------------------------------
+    # 8. Extracción de valores finales para UI
     # ------------------------------------------
     ema_200_series = hist['EMA_200'].dropna()
     ema_200_val    = ema_200_series.iloc[-1] if not ema_200_series.empty else 0
@@ -284,4 +334,12 @@ def procesar_datos_tecnicos(hist: pd.DataFrame) -> dict:
         'direccion_monitor': "Alcista 🟢" if hist['Monitor'].iloc[-1] > hist['Monitor'].iloc[-2] else "Bajista 🔴",
         'fvg_bullish':     fvg_bullish,
         'fvg_bearish':     fvg_bearish,
+        'atr_14':          atr_14,
+        'rsi_14':          rsi_14,
+        'rvol':            rvol,
+        'max_5':  max_5,  'min_5':  min_5,
+        'max_20': max_20, 'min_20': min_20,
+        'high_prev': high_prev, 'low_prev': low_prev,
+        'div_bull_reciente': div_bull_reciente,
+        'div_bear_reciente': div_bear_reciente,
     }
