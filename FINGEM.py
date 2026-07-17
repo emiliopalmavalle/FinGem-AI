@@ -456,7 +456,7 @@ elif tipo_mercado == "🌐 Escáner Global (Value/Momentum)":
         ),
         "🧺 Top 30 ETFs (Sectores y Macro)": (
             "SPY, QQQ, DIA, IWM, VOO, VTI, GLD, SLV, USO, UNG, XLE, XLF, XLK, XLV, XLI, "
-            "XLY, XLP, XLU, XLB, XLRE, XLC, ARKK, SMH, KRE, EEM, TLT, HYG, LQD"
+            "XLY, XLP, XLU, XLB, XLRE, XLC, ARKK, SMH, KRE, EEM, TLT, HYG, LQD, XBI, XOP"
         ),
         "🇲🇽 BMV (Bolsa Mexicana)": (
             "WALMEX.MX, GMEXICOB.MX, AMXB.MX, GFNORTEO.MX, FEMSAUBD.MX, "

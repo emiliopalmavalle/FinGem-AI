@@ -53,13 +53,15 @@ def _obtener_info_fundamental(empresa: yf.Ticker) -> dict:
         tipo   = getattr(fi, 'quote_type', 'EQUITY')
         max_52 = getattr(fi, 'year_high', None)
         sma200 = getattr(fi, 'two_hundred_day_average', None)
+        moneda = getattr(fi, 'currency', None)
         return {
             'tipo':   tipo if tipo else 'EQUITY',
             'max_52': max_52,
             'sma200': sma200,
+            'moneda': moneda or 'USD',
         }
     except Exception:
-        return {'tipo': 'EQUITY', 'max_52': None, 'sma200': None}
+        return {'tipo': 'EQUITY', 'max_52': None, 'sma200': None, 'moneda': 'USD'}
 
 
 def _obtener_fundamentales_completos(empresa: yf.Ticker) -> dict:
@@ -143,15 +145,17 @@ def procesar_un_ticker(ticker: str) -> Optional[dict]:
             return None  # Descartar sin llamar a .info completo
 
         # --- Solo aquí hacemos la llamada pesada ---
-        # El activo ya pasó al menos un filtro, vale la pena investigarlo
-        nombre = info_base.get('nombre') or ticker
+        # El activo ya pasó al menos un filtro, vale la pena investigarlo.
+        # fast_info no trae nombre, así que .info aplica a AMBOS candidatos
+        # (momentum también: sin esto la tabla repetía el ticker como nombre)
+        nombre = ticker
         pe_ratio, eps = 0, 0
+        moneda = info_base.get('moneda', 'USD')
 
-        if candidato_value:
-            fundamentales = _obtener_fundamentales_completos(empresa)
-            pe_ratio = fundamentales['pe_ratio']
-            eps      = fundamentales['eps']
-            nombre   = fundamentales.get('nombre') or nombre
+        fundamentales = _obtener_fundamentales_completos(empresa)
+        pe_ratio = fundamentales['pe_ratio']
+        eps      = fundamentales['eps']
+        nombre   = fundamentales.get('nombre') or nombre
 
         resultado = {
             "ticker": ticker,
@@ -181,12 +185,12 @@ def procesar_un_ticker(ticker: str) -> Optional[dict]:
             resultado["value"] = {
                 "Ticker":    ticker,
                 "Nombre":    nombre,
-                "Precio":    f"${precio_actual:.2f}",
+                "Precio":    f"{moneda} {precio_actual:,.2f}",
                 "Score_Raw": score,
                 "Score":     int(score),
                 "Caida_Raw": caida_pct,
                 "P/E":       round(pe_ratio, 2),
-                "EPS":       f"${eps:.2f}",
+                "EPS":       f"{moneda} {eps:.2f}",
                 "vs SMA200": sma200_txt,
             }
 
