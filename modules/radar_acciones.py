@@ -35,32 +35,31 @@ UMBRAL_RVOL           = 1.2     # Volumen relativo mínimo
 
 
 def _obtener_info_fundamental(empresa: yf.Ticker) -> dict:
-    """Obtiene datos fundamentales usando fast_info primero.
+    """Obtiene datos base usando fast_info (llamada HTTP ligera).
 
-    fast_info es una llamada HTTP más ligera que .info completo
-    (no parsea todo el JSON de Yahoo, solo los campos esenciales).
-
-    Solo hace fallback a .info completo si necesitamos P/E y EPS,
-    que no están disponibles en fast_info.
+    Atributos reales de yfinance FastInfo: year_high (máximo 52 semanas)
+    y two_hundred_day_average (SMA 200). Nota: fifty_two_week_high y
+    short_name NO existen en fast_info — el nombre sale de .info solo
+    para candidatos value (llamada pesada diferida).
 
     Args:
-        empresa: objeto yf.Ticker con sesión inyectada.
+        empresa: objeto yf.Ticker.
 
     Returns:
-        dict con tipo, nombre y max_52.
+        dict con tipo, max_52 (máximo 52 semanas real) y sma200.
     """
     try:
         fi = empresa.fast_info  # ← Más rápido: evita parsear ~120 campos
         tipo   = getattr(fi, 'quote_type', 'EQUITY')
-        nombre = getattr(fi, 'short_name', None)
-        max_52 = getattr(fi, 'fifty_two_week_high', None)
+        max_52 = getattr(fi, 'year_high', None)
+        sma200 = getattr(fi, 'two_hundred_day_average', None)
         return {
             'tipo':   tipo if tipo else 'EQUITY',
-            'nombre': (nombre[:20] if nombre else None),
             'max_52': max_52,
+            'sma200': sma200,
         }
     except Exception:
-        return {'tipo': 'EQUITY', 'nombre': None, 'max_52': None}
+        return {'tipo': 'EQUITY', 'max_52': None, 'sma200': None}
 
 
 def _obtener_fundamentales_completos(empresa: yf.Ticker) -> dict:
@@ -110,17 +109,30 @@ def procesar_un_ticker(ticker: str) -> Optional[dict]:
         precio_actual   = hist['Close'].iloc[-1]
         cambio_semanal  = ((precio_actual - hist['Close'].iloc[-6]) / hist['Close'].iloc[-6]) * 100
         vol_promedio    = hist['Volume'].iloc[-21:-1].mean()
-        vol_hoy         = hist['Volume'].iloc[-1]
-        rvol            = vol_hoy / vol_promedio if vol_promedio > 0 else 0.0
+
+        # RVOL robusto a sesión en curso: el volumen de "hoy" está
+        # incompleto si el mercado sigue abierto, lo que subestima el RVOL
+        # y descarta momentum reales. Tomamos el mayor entre la vela de hoy
+        # y la última vela completa (ayer).
+        if vol_promedio > 0:
+            rvol_hoy  = hist['Volume'].iloc[-1] / vol_promedio
+            rvol_ayer = hist['Volume'].iloc[-2] / vol_promedio if len(hist) >= 2 else 0.0
+            rvol = max(rvol_hoy, rvol_ayer)
+        else:
+            rvol = 0.0
 
         # --- Llamada ligera (fast_info) ---
         info_base = _obtener_info_fundamental(empresa)
         tipo_activo = info_base['tipo']
 
-        # Calculamos max_52w: usamos fast_info si está disponible,
-        # si no, calculamos del historial (sin API extra)
+        # Máximo 52 semanas real (year_high); fallback al máximo del
+        # historial de 2 meses solo si fast_info falla
         max_52w = info_base.get('max_52') or hist['Close'].max()
         caida_pct = ((precio_actual - max_52w) / max_52w) * 100
+
+        # Posición vs SMA 200: contexto anti-cuchillo (¿ya se estabilizó?)
+        sma200 = info_base.get('sma200') or 0
+        vs_sma200_pct = ((precio_actual - sma200) / sma200) * 100 if sma200 > 0 else None
 
         # --- Filtros técnicos previos ---
         candidato_value    = (tipo_activo == 'EQUITY' and caida_pct <= UMBRAL_CAIDA_VALUE)
@@ -148,15 +160,34 @@ def procesar_un_ticker(ticker: str) -> Optional[dict]:
             "momentum": None,
         }
 
+        # Formato de la posición vs SMA200 (contexto de estabilización)
+        if vs_sma200_pct is None:
+            sma200_txt = "N/A"
+        elif vs_sma200_pct >= 0:
+            sma200_txt = f"+{vs_sma200_pct:.1f}% ✅"   # sobre SMA200: estabilizada
+        else:
+            sma200_txt = f"{vs_sma200_pct:.1f}% ⚠️"    # bajo SMA200: aún cayendo
+
         # Motor 1: VALUE (solo acciones con descuento real y fundamentales sanos)
         if candidato_value and 0 < pe_ratio < UMBRAL_PE_MAX and eps > 0:
+            # Score compuesto: profundidad del descuento + P/E barato +
+            # bono si el precio ya recuperó la SMA200 (más caída NO siempre
+            # es mejor: un cuchillo cayendo puntúa menos que uno estabilizado)
+            score = (
+                min(abs(caida_pct), 60) * 0.6          # descuento (tope 60%)
+                + max(0.0, UMBRAL_PE_MAX - pe_ratio)   # qué tan barato es el P/E
+                + (15 if (vs_sma200_pct or -1) >= 0 else 0)  # estabilización
+            )
             resultado["value"] = {
                 "Ticker":    ticker,
                 "Nombre":    nombre,
                 "Precio":    f"${precio_actual:.2f}",
+                "Score_Raw": score,
+                "Score":     int(score),
                 "Caida_Raw": caida_pct,
                 "P/E":       round(pe_ratio, 2),
                 "EPS":       f"${eps:.2f}",
+                "vs SMA200": sma200_txt,
             }
 
         # Motor 2: MOMENTUM (fuerza de precio + confirmación de volumen)
@@ -167,6 +198,7 @@ def procesar_un_ticker(ticker: str) -> Optional[dict]:
                 "Fuerza_Raw":    cambio_semanal,
                 "Subida Semanal": f"+{cambio_semanal:.2f}% 🚀",
                 "RVOL":          f"{rvol:.1f}x Vol 🐋",
+                "vs SMA200":     sma200_txt,
             }
 
         # Si ningún motor produjo resultado útil, descartamos
@@ -245,9 +277,12 @@ def escaneo_institucional_dual(
     def _construir_df_value(datos: list) -> pd.DataFrame:
         if not datos:
             return pd.DataFrame()
-        df = pd.DataFrame(datos).sort_values("Caida_Raw", ascending=True).head(10)
+        # Ranking por score compuesto (descuento + P/E + estabilización),
+        # no por caída pura: más caída no siempre es mejor oportunidad
+        df = pd.DataFrame(datos).sort_values("Score_Raw", ascending=False).head(10)
         df['Descuento'] = df['Caida_Raw'].apply(lambda x: f"{x:.2f}% 🩸")
-        return df.drop(columns=['Caida_Raw'])
+        columnas = ['Ticker', 'Nombre', 'Precio', 'Score', 'Descuento', 'P/E', 'EPS', 'vs SMA200']
+        return df[columnas]
 
     def _construir_df_momentum(datos: list) -> pd.DataFrame:
         if not datos:

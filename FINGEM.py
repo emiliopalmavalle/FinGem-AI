@@ -498,11 +498,15 @@ elif tipo_mercado == "🌐 Escáner Global (Value/Momentum)":
             barra_progreso.progress(100)
 
             st.markdown("---")
-            st.subheader("🛒 Ángeles Caídos (Acciones Value en Descuento)")
+            st.subheader("💎 Oportunidades de Valor — Descuento vs Máximo 52 Semanas")
             if not df_val.empty:
                 st.dataframe(df_val, width="stretch", hide_index=True)
+                st.caption(
+                    "**Score** = profundidad del descuento + P/E barato + bono de estabilización. "
+                    "**vs SMA200**: ✅ sobre la media de 200 días (estabilizada) · ⚠️ debajo (aún en caída)."
+                )
             else:
-                st.warning("No se encontraron acciones en descuento extremo.")
+                st.warning("No se encontraron acciones con descuento significativo y fundamentales sanos.")
 
             col1, col2 = st.columns(2)
             with col1:
