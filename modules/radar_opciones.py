@@ -52,6 +52,7 @@ from math import log, sqrt, erf
 import concurrent.futures
 import warnings
 from modules.ai_client import llamar_ia
+from modules.radar_derivados import calcular_niveles_dia, encontrar_fecha_daytrading
 
 warnings.filterwarnings("ignore")
 
@@ -190,7 +191,8 @@ def _calcular_indicadores_tecnicos(hist: pd.DataFrame) -> dict:
 
 
 def _score_swing_ticker(hist: pd.DataFrame, datos_opciones: dict | None,
-                        umbral: int = UMBRAL_SENAL) -> dict:
+                        umbral: int = UMBRAL_SENAL,
+                        niveles_dia: dict | None = None) -> dict:
     """Score Swing 0-100 por dirección + señal BUY CALL / BUY PUT / WAIT.
 
     Todos los cálculos vectorizados; solo lee los valores finales (.iloc[-1]).
@@ -338,6 +340,17 @@ def _score_swing_ticker(hist: pd.DataFrame, datos_opciones: dict | None,
     score_alcista = max(0, min(100, int(intensidad + score_mom_bull * PESOS_SWING["momentum"] + s_rsi_bull * PESOS_SWING["rsi"])))
     score_bajista = max(0, min(100, int(intensidad + score_mom_bear * PESOS_SWING["momentum"] + s_rsi_bear * PESOS_SWING["rsi"])))
 
+    # ── Bono de flujo fresco (volumen hoy > OI en el vencimiento 1-3d):
+    # posicionamiento institucional NUEVO en la dirección del strike.
+    # Misma señal que el módulo de Derivados — aquí suma al score.
+    calls_frescos = puts_frescos = 0
+    if niveles_dia:
+        frescos = niveles_dia.get("flujo_fresco", [])
+        calls_frescos = sum(1 for x in frescos if x.startswith("CALL"))
+        puts_frescos  = sum(1 for x in frescos if x.startswith("PUT"))
+        score_alcista = min(100, score_alcista + 5 * calls_frescos)
+        score_bajista = min(100, score_bajista + 5 * puts_frescos)
+
     # ── Cruce EMA label
     if cruce_bull:    cruce_str = "Cruce alcista EMA 8/21"
     elif cruce_bear:  cruce_str = "Cruce bajista EMA 8/21"
@@ -365,6 +378,8 @@ def _score_swing_ticker(hist: pd.DataFrame, datos_opciones: dict | None,
     if rsi < 32:    razones.append(f"RSI sobreventa ({rsi:.0f})")
     if rsi > 68:    razones.append(f"RSI sobrecompra ({rsi:.0f})")
     if iv_rank_pct < 25: razones.append(f"IV Rank bajo ({iv_rank_pct}%) — prima barata")
+    if calls_frescos: razones.append(f"🔥 Flujo fresco en CALLs (x{calls_frescos})")
+    if puts_frescos:  razones.append(f"🔥 Flujo fresco en PUTs (x{puts_frescos})")
 
     return {
         "senal": senal, "score_alcista": score_alcista, "score_bajista": score_bajista,
@@ -575,10 +590,22 @@ def _analizar_ticker(args: tuple) -> dict | None:
             fh = _fecha_dte(fechas, dmin, dmax)
             res[h] = _calcular_score_horizonte(t, fh, precio) if fh else None
 
+        # Niveles operables 1-3d (mismo motor que el módulo Derivados):
+        # put wall / call wall / max pain / PCR del vencimiento / flujo fresco
+        niveles = {}
+        try:
+            fecha_dt = encontrar_fecha_daytrading(fechas)
+            cadena_dt = t.option_chain(fecha_dt)
+            niveles = calcular_niveles_dia(cadena_dt, precio)
+            niveles["vencimiento"] = fecha_dt
+        except Exception:
+            pass
+        res["niveles_dia"] = niveles
+
         datos_opts = res.get("scalping") or res.get("swing")
         res["swing_scan"] = _score_swing_ticker(
             hist_diario if hist_diario is not None else pd.DataFrame(), datos_opts,
-            umbral=umbral,
+            umbral=umbral, niveles_dia=niveles,
         )
         return res
     except Exception as e:
@@ -672,9 +699,22 @@ def _construir_tabla_scores(resultados: list, contexto_macro: dict):
         sq_icon  = "🔥 Release" if sc.get("squeeze_release") else ("🟤 Activo" if sc.get("squeeze_activo") else "—")
         liq_icon = "✅" if sc.get("liquidez_ok") else "❌"
 
+        # Niveles operables 1-3d (put wall / call wall / max pain)
+        nd = r.get("niveles_dia", {}) or {}
+        _fn = lambda v: f"${v:,.0f}" if v is not None else "—"
+        frescos = nd.get("flujo_fresco", [])
+        c_f = sum(1 for x in frescos if x.startswith("CALL"))
+        p_f = sum(1 for x in frescos if x.startswith("PUT"))
+        if c_f and p_f:   flujo_icon = "🔥 Mixto"
+        elif c_f:         flujo_icon = "🔥 CALLs"
+        elif p_f:         flujo_icon = "🔥 PUTs"
+        else:             flujo_icon = "—"
+
         filas_s.append({
             "Ticker": r["ticker"], "Señal": senal_display,
             "Score CALL": sc.get("score_alcista", 0), "Score PUT": sc.get("score_bajista", 0),
+            "Soporte": _fn(nd.get("put_wall")), "Resistencia": _fn(nd.get("call_wall")),
+            "Max Pain": _fn(nd.get("max_pain")), "Flujo Hoy": flujo_icon,
             "Squeeze": sq_icon, "IV Rank %": sc.get("iv_rank_pct", "—"),
             "RSI(14)": sc.get("rsi", "—"), "EMA Cruce": sc.get("cruce_ema", "—"),
             "RVOL Precio": sc.get("rvol_precio", "—"), "Liquidez": liq_icon,
@@ -769,7 +809,8 @@ def construir_grafico_radar(resultado_ticker: dict) -> go.Figure | None:
 # ══════════════════════════════════════════════════════
 
 def _generar_reporte_ia(ticker, precio, scores_quant, swing_scan, contexto_macro,
-                         muros_scalp, muros_swing, muros_macro) -> str:
+                         muros_scalp, muros_swing, muros_macro,
+                         niveles_dia: dict | None = None) -> str:
     """Genera el prompt enriquecido para la IA con todos los datos técnicos."""
 
     def _fm(muros):
@@ -829,6 +870,13 @@ SCORES QUANT OPCIONES (Capa 1 — por horizonte):
   Swing (21-60d)   : {scores_quant.get('swing',    {}).get('score','N/A')} | PCR: {scores_quant.get('swing',   {}).get('pcr','N/A')} | IV: {scores_quant.get('swing',   {}).get('iv_avg','N/A')}% | Bias Calls: {scores_quant.get('swing',   {}).get('bias_calls','N/A')}
   Posicional (90d+): {scores_quant.get('posicional',{}).get('score','N/A')} | PCR: {scores_quant.get('posicional',{}).get('pcr','N/A')} | IV: {scores_quant.get('posicional',{}).get('iv_avg','N/A')}% | Bias Calls: {scores_quant.get('posicional',{}).get('bias_calls','N/A')}
 
+NIVELES OPERABLES 1-3 DIAS (vencimiento {(niveles_dia or {}).get('vencimiento','N/A')}):
+  Soporte (Put Wall)      : {f"USD {niveles_dia['put_wall']:.2f}" if niveles_dia and niveles_dia.get('put_wall') else 'N/A'}
+  Resistencia (Call Wall) : {f"USD {niveles_dia['call_wall']:.2f}" if niveles_dia and niveles_dia.get('call_wall') else 'N/A'}
+  Max Pain (iman)         : {f"USD {niveles_dia['max_pain']:.2f}" if niveles_dia and niveles_dia.get('max_pain') else 'N/A'}
+  PCR del vencimiento     : {(niveles_dia or {}).get('pcr') or 'N/A'}
+  Flujo fresco hoy        : {'; '.join((niveles_dia or {}).get('flujo_fresco', [])) or 'ninguno'}
+
 MUROS GAMMA — Scalping (esta semana):
 {_fm(muros_scalp)}
 
@@ -850,11 +898,12 @@ INSTRUCCIONES (respeta este orden exacto):
    Tipo de opcion: CALL o PUT
    Vencimiento sugerido: DTE aproximado
    Strike sugerido: delta aproximado (ej. 0.40 delta)
-   ENTRADA al subyacente: precio exacto o zona
-   STOP LOSS (nivel que invalida el setup)
-   TAKE PROFIT 1 (50% posicion): objetivo conservador
+   ENTRADA al subyacente: precio exacto o zona (ancla en Put Wall si es CALL, Call Wall si es PUT)
+   STOP LOSS: fuera del muro que protege la entrada (nivel que invalida el setup)
+   TAKE PROFIT 1 (50% posicion): antes del muro opuesto o del Max Pain
    TAKE PROFIT 2 (50% restante): objetivo agresivo
    Ratio Riesgo/Beneficio estimado
+   Si hay flujo fresco hoy, indica si CONFIRMA o CONTRADICE el setup
 
 3. MUROS CLAVE A VIGILAR:
    Resistencia proxima (muro CALL relevante)
@@ -950,6 +999,7 @@ def ejecutar_radar_opciones(lista_tickers: list,
             ticker=lider["ticker"], precio=lider["precio"],
             scores_quant=sq, swing_scan=sc, contexto_macro=contexto,
             muros_scalp=_m("scalping"), muros_swing=_m("swing"), muros_macro=_m("posicional"),
+            niveles_dia=lider.get("niveles_dia"),
         )
 
     raw = {r["ticker"]: r for r in resultados}
