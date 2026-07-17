@@ -242,6 +242,31 @@ def buscar_joyas_ocultas(max_resultados: int = 25) -> list[str]:
         return []
 
 
+def buscar_universo_bmv(max_resultados: int = 30) -> list[str]:
+    """Descubre dinámicamente las emisoras más líquidas de la BMV.
+
+    Usa el screener nativo de Yahoo (region mx) ordenado por volumen —
+    encuentra emisoras y FIBRAs que no están en listas estáticas
+    (Sigma, Alpek, FUNO...). El motor dual clasifica después por
+    value/momentum, así que aquí solo filtramos liquidez mínima.
+
+    Returns:
+        Lista de símbolos .MX (vacía si Yahoo falla).
+    """
+    try:
+        consulta = yf.EquityQuery('and', [
+            yf.EquityQuery('eq', ['region', 'mx']),
+            yf.EquityQuery('gt', ['dayvolume', 100_000]),
+            yf.EquityQuery('gt', ['intradayprice', 5]),
+        ])
+        respuesta = yf.screen(
+            consulta, sortField='dayvolume', sortAsc=False, size=max_resultados
+        )
+        return [q['symbol'] for q in respuesta.get('quotes', []) if q.get('symbol')]
+    except Exception:
+        return []
+
+
 def escaneo_institucional_dual(
     lista_tickers: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:

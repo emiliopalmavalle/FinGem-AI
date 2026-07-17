@@ -8,7 +8,7 @@ from deep_translator import GoogleTranslator
 # ==========================================
 # 📦 IMPORTACIÓN DE MÓDULOS (ARQUITECTURA)
 # ==========================================
-from modules.radar_acciones import escaneo_institucional_dual, buscar_joyas_ocultas
+from modules.radar_acciones import escaneo_institucional_dual, buscar_joyas_ocultas, buscar_universo_bmv
 from modules.radar_derivados import escanear_flujo_institucional
 from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_radar, escanear_calls_baratos
 from modules.ai_client import configurar_ia, llamar_ia, mostrar_estado_ia_sidebar
@@ -458,10 +458,15 @@ elif tipo_mercado == "🌐 Escáner Global (Value/Momentum)":
             "SPY, QQQ, DIA, IWM, VOO, VTI, GLD, SLV, USO, UNG, XLE, XLF, XLK, XLV, XLI, "
             "XLY, XLP, XLU, XLB, XLRE, XLC, ARKK, SMH, KRE, EEM, TLT, HYG, LQD, XBI, XOP"
         ),
-        "🇲🇽 BMV (Bolsa Mexicana)": (
-            "WALMEX.MX, GMEXICOB.MX, AMXB.MX, GFNORTEO.MX, FEMSAUBD.MX, "
-            "CEMEXCPO.MX, GAPB.MX, ASURB.MX, BIMBOA.MX, AC.MX"
+        "🇲🇽 BMV (IPC Ampliado — 36 emisoras)": (
+            "AC.MX, ALSEA.MX, AMXB.MX, ASURB.MX, BBAJIOO.MX, BIMBOA.MX, BOLSAA.MX, "
+            "CEMEXCPO.MX, CHDRAUIB.MX, CUERVO.MX, FEMSAUBD.MX, GAPB.MX, GCARSOA1.MX, "
+            "GCC.MX, GENTERA.MX, GFINBURO.MX, GFNORTEO.MX, GMEXICOB.MX, GRUMAB.MX, "
+            "KIMBERA.MX, KOFUBL.MX, LABB.MX, LIVEPOLC-1.MX, MEGACPO.MX, OMAB.MX, "
+            "ORBIA.MX, PE&OLES.MX, PINFRA.MX, Q.MX, RA.MX, TLEVISACPO.MX, VESTA.MX, "
+            "WALMEX.MX, VOLARA.MX, SORIANAB.MX, LACOMERUBC.MX"
         ),
+        "🇲🇽🔍 Joyas BMV (Screener Dinámico)": "AUTO_MX",
         "🔍 Búsqueda Profunda (Joyas Ocultas)": "AUTO",
         "✍️ Lista Personalizada": "",
     }
@@ -470,6 +475,13 @@ elif tipo_mercado == "🌐 Escáner Global (Value/Momentum)":
 
     if seleccion_universo == "🔍 Búsqueda Profunda (Joyas Ocultas)":
         st.info("🤖 **Filtros Quant Activos:** P/E < 20, crecimiento EPS positivo, Volumen > 500K, Precio > USD 5, solo NYSE/NASDAQ.")
+        tickers_input = ""
+    elif seleccion_universo == "🇲🇽🔍 Joyas BMV (Screener Dinámico)":
+        st.info(
+            "🤖 **Descubrimiento dinámico BMV:** las 30 emisoras más líquidas de la Bolsa Mexicana "
+            "(volumen > 100K, precio > MXN 5) vía screener de Yahoo — incluye FIBRAs y emisoras "
+            "fuera del IPC. El motor dual las clasifica en Value/Momentum."
+        )
         tickers_input = ""
     else:
         tickers_default = universos[seleccion_universo]
@@ -485,6 +497,13 @@ elif tipo_mercado == "🌐 Escáner Global (Value/Momentum)":
                 lista_tickers = buscar_joyas_ocultas(max_resultados=25)
                 if lista_tickers:
                     st.success(f"✅ {len(lista_tickers)} activos encontrados. Iniciando motor Quant...")
+                else:
+                    st.warning("⚠️ El screener no arrojó resultados. Intenta de nuevo en unos minutos.")
+        elif seleccion_universo == "🇲🇽🔍 Joyas BMV (Screener Dinámico)":
+            with st.spinner("🕵️‍♂️ Descubriendo emisoras líquidas de la BMV..."):
+                lista_tickers = buscar_universo_bmv(max_resultados=30)
+                if lista_tickers:
+                    st.success(f"✅ {len(lista_tickers)} emisoras encontradas. Iniciando motor Quant...")
                 else:
                     st.warning("⚠️ El screener no arrojó resultados. Intenta de nuevo en unos minutos.")
         else:
