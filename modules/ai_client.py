@@ -21,7 +21,9 @@ Configuración: FINGEM.py llama configurar_ia() una vez por rerun con las
 keys desde st.secrets. Ningún módulo lee st.secrets directamente.
 """
 
+import re
 import threading
+from datetime import datetime, date
 import streamlit as st
 
 from modules.gemini_client import llamar_gemini, _generar_fallback
@@ -86,7 +88,8 @@ def _llamar_claude(prompt: str) -> str:
     texto = next((b.text for b in respuesta.content if b.type == "text"), "")
     if not texto:
         raise RuntimeError("Claude devolvió respuesta vacía")
-    return texto.replace("$", "USD ")
+    # Solo el $ pegado a cifras (no rompe bloques de código ni texto legítimo)
+    return re.sub(r"\$(?=\s?\d)", "USD ", texto)
 
 
 def _claude_disponible() -> bool:
@@ -108,15 +111,20 @@ _MARCADORES_FALLO_GEMINI = ("❌", "⚠️")
 
 
 @st.cache_data(ttl=60 * 60 * 24, max_entries=200, show_spinner=False)
-def _generar_cacheado(prompt: str) -> tuple[str, str]:
-    """Intenta Claude y luego Gemini. Cachea 24h la primera respuesta real.
+def _generar_cacheado(prompt: str, dia_cache: str) -> tuple[str, str, str]:
+    """Intenta Claude y luego Gemini. Cachea la primera respuesta real.
+
+    dia_cache (fecha de hoy) forma parte de la clave: un análisis nunca
+    sobrevive al cambio de día aunque el TTL no haya expirado (auditoría
+    P9b — evita servir el reporte de ayer con datos de hoy).
 
     Lanza _ProveedoresAgotadosError si ambos fallan — la excepción evita
     que el fallback local quede cacheado como si fuera respuesta de IA.
 
     Returns:
-        (texto_respuesta, proveedor)
+        (texto_respuesta, proveedor, timestamp_generacion)
     """
+    ts_generacion = datetime.now().strftime("%d/%m/%Y %H:%M")
     # ── 1. Claude
     if _claude_disponible():
         try:
@@ -124,7 +132,7 @@ def _generar_cacheado(prompt: str) -> tuple[str, str]:
             try:
                 texto = _llamar_claude(prompt)
                 _incrementar("claude")
-                return texto, "claude"
+                return texto, "claude", ts_generacion
             except anthropic.AuthenticationError:
                 _marcar_claude_no_disponible("API key inválida")
             except anthropic.PermissionDeniedError:
@@ -149,7 +157,7 @@ def _generar_cacheado(prompt: str) -> tuple[str, str]:
         )
         if resultado and not resultado.lstrip().startswith(_MARCADORES_FALLO_GEMINI):
             _incrementar("gemini")
-            return resultado, "gemini"
+            return resultado, "gemini", ts_generacion
 
     raise _ProveedoresAgotadosError()
 
@@ -195,8 +203,8 @@ def llamar_ia(prompt: str, contexto_fallback: dict | None = None) -> str:
         return "❌ No hay API keys de IA configuradas (ANTHROPIC_API_KEY / GEMINI_API_KEY)."
 
     try:
-        texto, proveedor = _generar_cacheado(prompt)
-        return f"🧠 *Análisis generado por: {_etiqueta_modelo(proveedor)}*\n\n{texto}"
+        texto, proveedor, ts = _generar_cacheado(prompt, date.today().isoformat())
+        return (f"🧠 *Análisis generado por: {_etiqueta_modelo(proveedor)} · {ts}*\n\n{texto}")
     except _ProveedoresAgotadosError:
         # El reporte local ya se anuncia a sí mismo en su encabezado
         return _generar_fallback(contexto_fallback or {})

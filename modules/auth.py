@@ -20,9 +20,14 @@ Uso en FINGEM.py (justo después de st.set_page_config):
 """
 
 import hashlib
+import time
 import streamlit as st
 
 _KEY_USUARIO = "usuario_autenticado"
+_KEY_FALLOS  = "_login_intentos_fallidos"
+_KEY_BLOQUEO = "_login_bloqueado_hasta"
+MAX_INTENTOS = 5
+BLOQUEO_SEG  = 60
 
 
 def _hash(password: str) -> str:
@@ -56,11 +61,26 @@ def requerir_login() -> None:
         enviar = st.form_submit_button("Entrar", type="primary", width="stretch")
 
     if enviar:
-        if _credenciales_validas(usuario, password):
+        # Rate limit (auditoría P9d): sleep progresivo por intento fallido
+        # y bloqueo temporal tras MAX_INTENTOS — frena fuerza bruta básica
+        bloqueado_hasta = st.session_state.get(_KEY_BLOQUEO, 0)
+        if time.time() < bloqueado_hasta:
+            restante = int(bloqueado_hasta - time.time())
+            st.error(f"🔒 Demasiados intentos fallidos. Espera {restante}s e intenta de nuevo.")
+        elif _credenciales_validas(usuario, password):
             st.session_state[_KEY_USUARIO] = usuario
+            st.session_state.pop(_KEY_FALLOS, None)
+            st.session_state.pop(_KEY_BLOQUEO, None)
             st.rerun()
         else:
-            st.error("❌ Usuario o contraseña incorrectos.")
+            fallos = st.session_state.get(_KEY_FALLOS, 0) + 1
+            st.session_state[_KEY_FALLOS] = fallos
+            time.sleep(min(fallos * 2, 8))  # sleep progresivo
+            if fallos >= MAX_INTENTOS:
+                st.session_state[_KEY_BLOQUEO] = time.time() + BLOQUEO_SEG
+                st.error(f"🔒 {MAX_INTENTOS} intentos fallidos — acceso bloqueado {BLOQUEO_SEG}s.")
+            else:
+                st.error(f"❌ Usuario o contraseña incorrectos ({fallos}/{MAX_INTENTOS}).")
 
     st.stop()  # nada debajo de esta línea se ejecuta sin login
 

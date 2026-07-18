@@ -14,6 +14,7 @@ from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_ra
 from modules.ai_client import configurar_ia, llamar_ia, mostrar_estado_ia_sidebar, proveedor_activo
 from modules.contexto_macro import obtener_contexto_macro_global, mostrar_metricas_macro
 from modules.auth import requerir_login, mostrar_usuario_sidebar
+from modules.validador_plan import extraer_plan, validar_plan
 from modules.motor_grafico import construir_grafico_tecnico
 from modules.procesador_datos import procesar_datos_tecnicos, descargar_historia
 
@@ -72,21 +73,41 @@ def analizar_con_gemini(
     }
     horizonte_op = horizontes_map.get(temporalidad, "el corto plazo")
 
+    # Regla de stop según temporalidad: el múltiplo de ATR solo tiene
+    # sentido en marcos cortos; en Semanal/Mensual el ATR de vela alta
+    # es enorme y el anclaje válido es la estructura
+    if temporalidad in ("1 Hora", "4 Horas", "Diario"):
+        regla_stop = ("STOP LOSS: aproximadamente 1.5x el ATR(14) desde la entrada, "
+                      "colocado del otro lado del nivel que protege (mínimo estructural o Put/Call Wall).")
+    else:
+        regla_stop = ("STOP LOSS: ancla el stop a la ESTRUCTURA (bajo el mínimo relevante o sobre el "
+                      "máximo relevante); NO uses el múltiplo de ATR — en velas de esta temporalidad es demasiado amplio.")
+
     bloque_conclusion = f"""
-        4. 🎯 CONCLUSIÓN ({temporalidad}): cierra SIEMPRE el reporte con una sección final
-           titulada exactamente "🎯 Conclusión ({temporalidad})" que responda en 3-4 líneas:
-           - Dirección más probable del precio en {horizonte_op} y con qué convicción (alta/media/baja).
-           - Nivel que CONFIRMA ese escenario y nivel que lo INVALIDA (USD exactos).
-           - La acción concreta a tomar: entrar ya, esperar confirmación en X nivel, o quedarse fuera.
-           Esta conclusión debe ser coherente con la temporalidad {temporalidad}: no des consejos
-           intradía si el reporte es Semanal, ni visión de meses si es de 1 Hora."""
+        SECCIÓN FINAL OBLIGATORIA — cierra SIEMPRE el reporte con una sección
+        titulada exactamente "🎯 Conclusión ({temporalidad})" que responda en 3-4 líneas:
+        - Dirección más probable del precio en {horizonte_op} y con qué convicción (alta/media/baja).
+        - Nivel que CONFIRMA ese escenario y nivel que lo INVALIDA (USD exactos).
+        - La acción concreta a tomar: entrar ya, esperar confirmación en X nivel, o quedarse fuera.
+        Esta conclusión debe ser coherente con la temporalidad {temporalidad}: no des consejos
+        intradía si el reporte es Semanal, ni visión de meses si es de 1 Hora."""
+
+    bloque_json = """
+        Después de la conclusión, añade al FINAL un bloque de código con SOLO este JSON
+        (números sin comillas, sin texto extra dentro del bloque):
+        ```json
+        {"sesgo": "alcista|bajista|neutral", "entrada": 0.0, "stop": 0.0, "tp1": 0.0}
+        ```
+        Si tu recomendación es quedarse fuera, usa "sesgo": "neutral" y pon 0 en los niveles."""
 
     # ── BOLSA (NY / MX)
     if "NY" in tipo_mercado or "MX" in tipo_mercado or "Análisis Individual" in tipo_mercado:
         bloque_macro = f"- CONTEXTO MACRO GLOBAL (Top-Down): {macro_global}" if macro_global else ""
         prompt = f"""
-        Eres un analista financiero institucional especializado en operativa de 1 a 3 días.
+        Eres un analista financiero institucional. El horizonte operativo de este reporte es {horizonte_op}
+        (temporalidad de velas: {temporalidad}) — TODO el plan debe dimensionarse a ese plazo.
         Tu método es Top-Down: primero el macro, luego el sentimiento, luego la empresa, al final el precio.
+        Fecha actual: {datetime.datetime.now():%Y-%m-%d}.
         Analiza la acción: {simbolo}.
         - Precio actual: USD {precio_actual:.2f}
         {bloque_macro}
@@ -98,21 +119,25 @@ def analizar_con_gemini(
         1. 🌍 Macro Top-Down: ¿el entorno de tasas, curva de rendimientos, inflación (petróleo/oro/dólar)
            y momento del ciclo económico FAVORECE o CASTIGA a este sector y a esta acción? Sé específico.
         2. 🧠 Sentimiento de Mercado: régimen del VIX (miedo/complacencia), TONO de las noticias
-           (¿optimistas, negativas, neutras?) y — si hay niveles de opciones — qué dicen el PCR y el
-           flujo fresco sobre lo que compran las manos fuertes (protección Puts vs especulación Calls).
+           (¿optimistas, negativas, neutras?) y — si hay niveles de opciones — el PCR del vencimiento y
+           los strikes con volumen inusual. OJO: la dirección de ese volumen (compra o venta) es
+           DESCONOCIDA con estos datos — trátalos como zonas de interés/imanes, no como apuestas confirmadas.
         3. 🏰 Cualitativo: en 2-3 líneas evalúa con tu conocimiento de la empresa su ventaja competitiva
            (moat: patentes, marca, costos de cambio), la calidad de su gestión, y el riesgo regulatorio
            o geopolítico más relevante de su sector hoy.
         4. ⚙️ Acción del Precio: tendencia (EMAs, ADX, Monitor), momentum (RSI, RVOL, divergencias) y zonas de liquidez (FVG).
-        5. 💡 Veredicto Institucional (1-3 días): sesgo direccional y plan operativo — coherente con los puntos 1 y 2:
+        5. 💡 Veredicto Institucional ({horizonte_op}): sesgo direccional y plan operativo — coherente con los puntos 1 y 2:
            si el macro o el sentimiento van en contra del setup técnico, exige más confirmación o reduce el tamaño.
 
-        REGLAS PARA EL PLAN DEL PUNTO 3 (obligatorias):
+        REGLAS PARA EL PLAN DEL PUNTO 5 (obligatorias):
         - ENTRADA: anclada a un nivel real de la ESTRUCTURA (máx/mín 5-20 velas, high/low previo) o a un muro de opciones — nunca un número redondo inventado.
-        - STOP LOSS: aproximadamente 1.5x el ATR(14) desde la entrada, colocado del otro lado del nivel que protege (mínimo estructural o Put/Call Wall).
+        - {regla_stop}
         - TAKE PROFIT: antes del siguiente nivel de estructura o muro opuesto; indica el ratio riesgo/beneficio resultante.
-        - Si el flujo fresco de opciones contradice tu sesgo, adviértelo explícitamente.
+        - Si TODOS los niveles de estructura quedan POR ENCIMA del precio actual (colapso reciente), el único
+          anclaje válido de soporte es el Put Wall; si tampoco existe, declara "sin soporte estructural cercano" y sé conservador.
+        - Si hay earnings dentro del horizonte operativo, adviértelo como riesgo de gap.
         {bloque_conclusion}
+        {bloque_json}
 
         REGLA: Usa 'USD' en lugar del símbolo dólar. Directo y sin frases genéricas.
         """
@@ -132,6 +157,7 @@ def analizar_con_gemini(
 
         prompt = f"""
         Eres un Analista Quant Senior de Criptomonedas. Tu especialidad es cruzar datos On-Chain y Análisis Técnico (T. Latino y SMC).
+        Fecha actual: {datetime.datetime.now():%Y-%m-%d}. Horizonte operativo del reporte: {horizonte_op}.
         Analiza el activo {simbolo} en temporalidad de {temporalidad}:
         - Precio actual: USD {precio_actual:.2f}
         {bloque_ciclo}
@@ -149,8 +175,10 @@ def analizar_con_gemini(
         Genera un reporte agresivo y directo en 3 puntos:
         {punto_1}
         2. 🐋 Análisis de Liquidez y On-Chain (ballenas, sentimiento retail, flujo institucional).
-        3. 💡 Veredicto Institucional y Operativa — sesgo, entrada USD exacta, Stop Loss y Take Profit.
+        3. 💡 Veredicto Institucional y Operativa ({horizonte_op}) — sesgo, entrada USD exacta anclada
+           a estructura, Stop Loss y Take Profit. {regla_stop}
         {bloque_conclusion}
+        {bloque_json}
 
         REGLA ABSOLUTA: Usa 'USD' en lugar del símbolo dólar. Sin frases genéricas. Máximo 350 palabras.
         """
@@ -756,8 +784,17 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                         tk_op = yf.Ticker(simbolo)
                         fechas_op = tk_op.options
                         if fechas_op:
-                            from modules.radar_derivados import calcular_niveles_dia, encontrar_fecha_daytrading
-                            fecha_op = encontrar_fecha_daytrading(fechas_op)
+                            from modules.radar_derivados import (
+                                calcular_niveles_dia, encontrar_fecha_daytrading, encontrar_fecha_cercana,
+                            )
+                            # Vencimiento acorde a la temporalidad del análisis:
+                            # muros que expiran en días no sirven para un plan semanal
+                            if temporalidad in ("1 Hora", "4 Horas", "Diario"):
+                                fecha_op = encontrar_fecha_daytrading(fechas_op)
+                            elif temporalidad == "Semanal":
+                                fecha_op = encontrar_fecha_cercana(fechas_op, 45)
+                            else:  # Mensual
+                                fecha_op = encontrar_fecha_cercana(fechas_op, 90)
                             niv_op = calcular_niveles_dia(tk_op.option_chain(fecha_op), precio_actual)
                             _fo = lambda v: f"USD {v:.2f}" if v is not None else "N/A"
                             datos_extra_str += (
@@ -821,13 +858,41 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                 except Exception:
                     noticias_str = "Sin noticias disponibles."
 
-                # ── 6. Consenso de analistas (solo bolsa)
+                # ── 6. Consenso + fundamentales + earnings próximos (solo bolsa)
                 recomendacion_str = "N/A"
                 if "NY" in tipo_mercado or "MX" in tipo_mercado or "Individual" in tipo_mercado:
                     try:
-                        # recommendationKey solo existe en .info (fast_info no lo trae)
-                        info_ticker = yf.Ticker(simbolo).info
+                        # Una sola llamada .info para consenso Y fundamentales
+                        tk_fund = yf.Ticker(simbolo)
+                        info_ticker = tk_fund.info
                         recomendacion_str = info_ticker.get("recommendationKey", "N/A") or "N/A"
+
+                        # Fundamentales clave (auditoría P8): salud financiera real
+                        _fmt_b = lambda v: f"USD {v/1e9:,.1f}B" if v else "N/A"
+                        fpe_val    = info_ticker.get('forwardPE')
+                        margen_val = info_ticker.get('operatingMargins')
+                        fpe_txt    = f"{fpe_val:.1f}" if fpe_val else "N/A"
+                        margen_txt = f"{margen_val*100:.1f}%" if margen_val else "N/A"
+                        datos_extra_str += (
+                            f" FUNDAMENTALES: Free Cash Flow {_fmt_b(info_ticker.get('freeCashflow'))}, "
+                            f"Deuda total {_fmt_b(info_ticker.get('totalDebt'))}, "
+                            f"Forward P/E {fpe_txt}, Margen operativo {margen_txt}."
+                        )
+
+                        # Earnings próximos: ningún plan a días debería ignorar un gap inminente
+                        try:
+                            cal = tk_fund.calendar
+                            fechas_earnings = (cal or {}).get("Earnings Date", []) if isinstance(cal, dict) else []
+                            if fechas_earnings:
+                                prox = fechas_earnings[0]
+                                dias_e = (pd.Timestamp(prox).date() - datetime.date.today()).days
+                                if dias_e >= 0:
+                                    datos_extra_str += (
+                                        f" ⚠️ PRÓXIMOS EARNINGS: {prox} (en {dias_e} días) — "
+                                        f"riesgo de gap si cae dentro del horizonte operativo."
+                                    )
+                        except Exception:
+                            pass
                     except Exception:
                         pass
 
@@ -848,9 +913,25 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
 
             st.success("Análisis completado:")
             mostrar_metricas_macro(ctx_macro_global)
-            st.markdown(analisis)
+
+            # ── Validación numérica del plan (auditoría P7):
+            #    la IA redacta, la aritmética se verifica en Python
+            plan, analisis_limpio = extraer_plan(analisis)
+            st.markdown(analisis_limpio)
+
+            if plan:
+                v = validar_plan(plan, precio_actual, atr=datos.get('atr_14'))
+                if v["entrada"] and v["sesgo"] != "neutral":
+                    pc1, pc2, pc3, pc4 = st.columns(4)
+                    pc1.metric("Sesgo", v["sesgo"].capitalize())
+                    pc2.metric("Entrada", f"USD {v['entrada']:,.2f}")
+                    pc3.metric("Stop", f"USD {v['stop']:,.2f}")
+                    pc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" + (f" ({v['rb']})" if v['rb'] else ""))
+                for aviso in v["avisos"]:
+                    (st.warning if aviso.startswith("⚠️") else st.info if aviso.startswith("ℹ️") else st.success)(aviso)
+
             if enviar_telegram:
-                enviar_alerta_telegram(analisis)
+                enviar_alerta_telegram(analisis_limpio)
 
     else:
         st.error(
@@ -896,7 +977,10 @@ elif tipo_mercado == "🧱 Flujo de Opciones (Derivados)" and simbolo:
                 delta_color="inverse",
             )
             if niveles_dia.get("flujo_fresco"):
-                st.warning("🔥 **Flujo fresco detectado hoy:** " + " · ".join(niveles_dia["flujo_fresco"]))
+                st.warning(
+                    "🔥 **Volumen inusual hoy (vol > OI):** " + " · ".join(niveles_dia["flujo_fresco"])
+                    + " — dirección desconocida: zonas de interés, no apuestas confirmadas."
+                )
 
         if fig_visual is not None:
             st.plotly_chart(fig_visual, width="stretch", config={'displayModeBar': False})

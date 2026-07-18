@@ -138,26 +138,32 @@ def _detectar_fvg_vectorizado(hist: pd.DataFrame):
     bull_indices = ventana.index[bull_mask]
     bear_indices = ventana.index[bear_mask]
 
-    if len(bull_indices) > 0:
-        idx = bull_indices[-1]
-        # El imbalance va desde el High de i-2 hasta el Low de i
+    # Se recorre del más reciente al más viejo y se reporta el primer FVG
+    # NO mitigado: si el precio ya regresó a rellenar el hueco, el
+    # imbalance dejó de ser zona de liquidez pendiente (auditoría P9c)
+    for idx in reversed(list(bull_indices)):
         idx_pos = ventana.index.get_loc(idx)
-        if idx_pos >= 2:
-            idx_2_back = ventana.index[idx_pos - 2]
-            fvg_bullish = (
-                f"USD {ventana.loc[idx_2_back, 'High']:.2f} – "
-                f"USD {ventana.loc[idx, 'Low']:.2f}"
-            )
+        if idx_pos < 2:
+            continue
+        idx_2_back = ventana.index[idx_pos - 2]
+        zona_baja = ventana.loc[idx_2_back, 'High']   # piso del hueco alcista
+        velas_despues = ventana.iloc[idx_pos + 1:]
+        mitigado = (not velas_despues.empty) and (velas_despues['Low'].min() <= zona_baja)
+        if not mitigado:
+            fvg_bullish = f"USD {zona_baja:.2f} – USD {ventana.loc[idx, 'Low']:.2f}"
+            break
 
-    if len(bear_indices) > 0:
-        idx = bear_indices[-1]
+    for idx in reversed(list(bear_indices)):
         idx_pos = ventana.index.get_loc(idx)
-        if idx_pos >= 2:
-            idx_2_back = ventana.index[idx_pos - 2]
-            fvg_bearish = (
-                f"USD {ventana.loc[idx, 'High']:.2f} – "
-                f"USD {ventana.loc[idx_2_back, 'Low']:.2f}"
-            )
+        if idx_pos < 2:
+            continue
+        idx_2_back = ventana.index[idx_pos - 2]
+        zona_alta = ventana.loc[idx_2_back, 'Low']    # techo del hueco bajista
+        velas_despues = ventana.iloc[idx_pos + 1:]
+        mitigado = (not velas_despues.empty) and (velas_despues['High'].max() >= zona_alta)
+        if not mitigado:
+            fvg_bearish = f"USD {ventana.loc[idx, 'High']:.2f} – USD {zona_alta:.2f}"
+            break
 
     return fvg_bullish, fvg_bearish
 
@@ -330,7 +336,11 @@ def procesar_datos_tecnicos(hist: pd.DataFrame) -> dict:
         'ema_55':          hist['EMA_55'].iloc[-1],
         'ema_200':         ema_200_val,
         'adx_actual':      adx_actual,
-        'pendiente_adx':   "Negativa 📉" if adx_actual < adx_prev else "Positiva 📈",
+        # "descendente/ascendente" y no "Negativa/Positiva": la etiqueta vieja
+        # inducía a leer "ADX negativo" (imposible — el ADX es 0-100)
+        'pendiente_adx':   ("pendiente descendente — tendencia perdiendo fuerza 📉"
+                            if adx_actual < adx_prev
+                            else "pendiente ascendente — tendencia ganando fuerza 📈"),
         'direccion_monitor': "Alcista 🟢" if hist['Monitor'].iloc[-1] > hist['Monitor'].iloc[-2] else "Bajista 🔴",
         'fvg_bullish':     fvg_bullish,
         'fvg_bearish':     fvg_bearish,

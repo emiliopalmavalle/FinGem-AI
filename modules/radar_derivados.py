@@ -40,7 +40,9 @@ def analizar_muros_con_ia(
     - Resistencia (Call Wall, mayor OI arriba del spot): {fmt(n.get('call_wall'))}
     - Max Pain (imán de vencimiento): {fmt(n.get('max_pain'))}
     - Put/Call Ratio de ESTE vencimiento: {n.get('pcr') if n.get('pcr') is not None else 'N/A'}
-    - Flujo fresco (volumen hoy > OI, posicionamiento nuevo): {'; '.join(n.get('flujo_fresco', [])) or 'ninguno detectado'}
+    - Volumen INUSUAL hoy (vol > OI): {'; '.join(n.get('flujo_fresco', [])) or 'ninguno detectado'}
+      OJO: la dirección de ese volumen (compra o venta, spread o roll) es DESCONOCIDA con estos
+      datos — trátalo como zona de interés institucional, NO como apuesta direccional confirmada.
     """
 
     prompt = f"""
@@ -56,8 +58,8 @@ def analizar_muros_con_ia(
        y Max Pain como imán, define ENTRADA exacta, STOP LOSS estricto (fuera del muro) y
        TAKE PROFIT (antes del muro opuesto). Indica si el sesgo del día es alcista, bajista o
        rango, considerando el PCR del vencimiento y el flujo fresco.
-    2. FLUJO FRESCO: si hay strikes con volumen > OI, interpreta qué está posicionando el
-       dinero institucional HOY.
+    2. VOLUMEN INUSUAL: si hay strikes con volumen > OI, señálalos como zonas de interés/imanes
+       del día. NO afirmes si fue compra o venta — esa información no existe en estos datos.
     3. VISIÓN MACRO (breve): ¿hacia dónde apuesta el Smart Money en 30/90/180 días?
 
     REGLA TÉCNICA CRÍTICA: NO USES EL SÍMBOLO DE DÓLAR. Usa 'USD' (ejemplo: USD 400).

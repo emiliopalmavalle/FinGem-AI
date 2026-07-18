@@ -378,8 +378,8 @@ def _score_swing_ticker(hist: pd.DataFrame, datos_opciones: dict | None,
     if rsi < 32:    razones.append(f"RSI sobreventa ({rsi:.0f})")
     if rsi > 68:    razones.append(f"RSI sobrecompra ({rsi:.0f})")
     if iv_rank_pct < 25: razones.append(f"IV Rank bajo ({iv_rank_pct}%) — prima barata")
-    if calls_frescos: razones.append(f"🔥 Flujo fresco en CALLs (x{calls_frescos})")
-    if puts_frescos:  razones.append(f"🔥 Flujo fresco en PUTs (x{puts_frescos})")
+    if calls_frescos: razones.append(f"🔥 Vol inusual en CALLs x{calls_frescos} (dirección desconocida)")
+    if puts_frescos:  razones.append(f"🔥 Vol inusual en PUTs x{puts_frescos} (dirección desconocida)")
 
     return {
         "senal": senal, "score_alcista": score_alcista, "score_bajista": score_bajista,
@@ -714,7 +714,7 @@ def _construir_tabla_scores(resultados: list, contexto_macro: dict):
             "Ticker": r["ticker"], "Señal": senal_display,
             "Score CALL": sc.get("score_alcista", 0), "Score PUT": sc.get("score_bajista", 0),
             "Soporte": _fn(nd.get("put_wall")), "Resistencia": _fn(nd.get("call_wall")),
-            "Max Pain": _fn(nd.get("max_pain")), "Flujo Hoy": flujo_icon,
+            "Max Pain": _fn(nd.get("max_pain")), "Vol Inusual": flujo_icon,
             "Squeeze": sq_icon, "IV Rank %": sc.get("iv_rank_pct", "—"),
             "RSI(14)": sc.get("rsi", "—"), "EMA Cruce": sc.get("cruce_ema", "—"),
             "RVOL Precio": sc.get("rvol_precio", "—"), "Liquidez": liq_icon,
@@ -875,7 +875,9 @@ NIVELES OPERABLES 1-3 DIAS (vencimiento {(niveles_dia or {}).get('vencimiento','
   Resistencia (Call Wall) : {f"USD {niveles_dia['call_wall']:.2f}" if niveles_dia and niveles_dia.get('call_wall') else 'N/A'}
   Max Pain (iman)         : {f"USD {niveles_dia['max_pain']:.2f}" if niveles_dia and niveles_dia.get('max_pain') else 'N/A'}
   PCR del vencimiento     : {(niveles_dia or {}).get('pcr') or 'N/A'}
-  Flujo fresco hoy        : {'; '.join((niveles_dia or {}).get('flujo_fresco', [])) or 'ninguno'}
+  Volumen INUSUAL hoy     : {'; '.join((niveles_dia or {}).get('flujo_fresco', [])) or 'ninguno'}
+  (La dirección de ese volumen — compra/venta, spread/roll — es DESCONOCIDA: trátalo
+   como zona de interés o imán, NO como apuesta direccional confirmada.)
 
 MUROS GAMMA — Scalping (esta semana):
 {_fm(muros_scalp)}
@@ -903,7 +905,7 @@ INSTRUCCIONES (respeta este orden exacto):
    TAKE PROFIT 1 (50% posicion): antes del muro opuesto o del Max Pain
    TAKE PROFIT 2 (50% restante): objetivo agresivo
    Ratio Riesgo/Beneficio estimado
-   Si hay flujo fresco hoy, indica si CONFIRMA o CONTRADICE el setup
+   Si hay volumen inusual hoy, menciona esos strikes como zonas de interés (sin afirmar dirección)
 
 3. MUROS CLAVE A VIGILAR:
    Resistencia proxima (muro CALL relevante)

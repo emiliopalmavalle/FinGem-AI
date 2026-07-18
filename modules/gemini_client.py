@@ -311,7 +311,9 @@ def llamar_gemini(
                     # Respuesta vacía (p.ej. bloqueo de seguridad): probar siguiente modelo
                     ultimo_error = ValueError(f"{modelo} devolvió respuesta vacía")
                     break
-                texto = respuesta.text.replace("$", "USD ")
+                import re as _re
+                # Solo el $ pegado a cifras (no rompe código ni texto legítimo)
+                texto = _re.sub(r"\$(?=\s?\d)", "USD ", respuesta.text)
 
                 # Éxito: guardar en caché y actualizar contador (thread-safe)
                 if usar_cache:
