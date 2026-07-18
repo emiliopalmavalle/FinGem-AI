@@ -59,6 +59,26 @@ def analizar_con_gemini(
     if not ANTHROPIC_API_KEY and not GEMINI_API_KEY:
         return "❌ Error: No hay API keys de IA en tus secrets (ANTHROPIC_API_KEY / GEMINI_API_KEY)."
 
+    # Horizonte operativo que implica cada temporalidad — la conclusión
+    # final del reporte se enmarca en este plazo, no en genérico
+    horizontes_map = {
+        "1 Hora":  "las próximas horas de la sesión (intradía)",
+        "4 Horas": "las próximas 1-2 jornadas",
+        "Diario":  "los próximos 1-5 días",
+        "Semanal": "las próximas semanas",
+        "Mensual": "los próximos meses",
+    }
+    horizonte_op = horizontes_map.get(temporalidad, "el corto plazo")
+
+    bloque_conclusion = f"""
+        4. 🎯 CONCLUSIÓN ({temporalidad}): cierra SIEMPRE el reporte con una sección final
+           titulada exactamente "🎯 Conclusión ({temporalidad})" que responda en 3-4 líneas:
+           - Dirección más probable del precio en {horizonte_op} y con qué convicción (alta/media/baja).
+           - Nivel que CONFIRMA ese escenario y nivel que lo INVALIDA (USD exactos).
+           - La acción concreta a tomar: entrar ya, esperar confirmación en X nivel, o quedarse fuera.
+           Esta conclusión debe ser coherente con la temporalidad {temporalidad}: no des consejos
+           intradía si el reporte es Semanal, ni visión de meses si es de 1 Hora."""
+
     # ── BOLSA (NY / MX)
     if "NY" in tipo_mercado or "MX" in tipo_mercado or "Análisis Individual" in tipo_mercado:
         prompt = f"""
@@ -79,6 +99,7 @@ def analizar_con_gemini(
         - STOP LOSS: aproximadamente 1.5x el ATR(14) desde la entrada, colocado del otro lado del nivel que protege (mínimo estructural o Put/Call Wall).
         - TAKE PROFIT: antes del siguiente nivel de estructura o muro opuesto; indica el ratio riesgo/beneficio resultante.
         - Si el flujo fresco de opciones contradice tu sesgo, adviértelo explícitamente.
+        {bloque_conclusion}
 
         REGLA: Usa 'USD' en lugar del símbolo dólar. Directo y sin frases genéricas.
         """
@@ -115,8 +136,9 @@ def analizar_con_gemini(
         {punto_1}
         2. 🐋 Análisis de Liquidez y On-Chain (ballenas, sentimiento retail, flujo institucional).
         3. 💡 Veredicto Institucional y Operativa — sesgo, entrada USD exacta, Stop Loss y Take Profit.
+        {bloque_conclusion}
 
-        REGLA ABSOLUTA: Usa 'USD' en lugar del símbolo dólar. Sin frases genéricas. Máximo 300 palabras.
+        REGLA ABSOLUTA: Usa 'USD' en lugar del símbolo dólar. Sin frases genéricas. Máximo 350 palabras.
         """
 
     ctx = {
