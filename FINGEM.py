@@ -12,6 +12,7 @@ from modules.radar_acciones import escaneo_institucional_dual, buscar_joyas_ocul
 from modules.radar_derivados import escanear_flujo_institucional
 from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_radar, escanear_calls_baratos
 from modules.ai_client import configurar_ia, llamar_ia, mostrar_estado_ia_sidebar, proveedor_activo
+from modules.contexto_macro import obtener_contexto_macro_global, mostrar_metricas_macro
 from modules.auth import requerir_login, mostrar_usuario_sidebar
 from modules.motor_grafico import construir_grafico_tecnico
 from modules.procesador_datos import procesar_datos_tecnicos, descargar_historia
@@ -48,6 +49,7 @@ def analizar_con_gemini(
     datos_onchain: str = "",
     ciclo_macro: str = "",
     temporalidad: str = "Diario",
+    macro_global: str = "",
 ) -> str:
     """
     Cerebro IA completo — restaurado del cerebro viejo con toda su riqueza:
@@ -81,18 +83,29 @@ def analizar_con_gemini(
 
     # ── BOLSA (NY / MX)
     if "NY" in tipo_mercado or "MX" in tipo_mercado or "Análisis Individual" in tipo_mercado:
+        bloque_macro = f"- CONTEXTO MACRO GLOBAL (Top-Down): {macro_global}" if macro_global else ""
         prompt = f"""
         Eres un analista financiero institucional especializado en operativa de 1 a 3 días.
+        Tu método es Top-Down: primero el macro, luego el sentimiento, luego la empresa, al final el precio.
         Analiza la acción: {simbolo}.
         - Precio actual: USD {precio_actual:.2f}
+        {bloque_macro}
         - Datos Técnicos, Estructura y Niveles: {datos_extra}
         - Consenso de analistas: {recomendacion}
         - Noticias recientes: {textos_noticias}
 
-        Genera un resumen ejecutivo en 3 puntos:
-        1. ⚙️ Acción del Precio: tendencia (EMAs, ADX, Monitor), momentum (RSI, RVOL, divergencias) y zonas de liquidez (FVG).
-        2. 📊 Valoración y Flujo: consenso, noticias y — si hay niveles de opciones — qué dicen los muros y el flujo fresco sobre el posicionamiento institucional.
-        3. 💡 Veredicto Institucional (1-3 días): sesgo direccional y plan operativo.
+        Genera un resumen ejecutivo en 5 puntos:
+        1. 🌍 Macro Top-Down: ¿el entorno de tasas, curva de rendimientos, inflación (petróleo/oro/dólar)
+           y momento del ciclo económico FAVORECE o CASTIGA a este sector y a esta acción? Sé específico.
+        2. 🧠 Sentimiento de Mercado: régimen del VIX (miedo/complacencia), TONO de las noticias
+           (¿optimistas, negativas, neutras?) y — si hay niveles de opciones — qué dicen el PCR y el
+           flujo fresco sobre lo que compran las manos fuertes (protección Puts vs especulación Calls).
+        3. 🏰 Cualitativo: en 2-3 líneas evalúa con tu conocimiento de la empresa su ventaja competitiva
+           (moat: patentes, marca, costos de cambio), la calidad de su gestión, y el riesgo regulatorio
+           o geopolítico más relevante de su sector hoy.
+        4. ⚙️ Acción del Precio: tendencia (EMAs, ADX, Monitor), momentum (RSI, RVOL, divergencias) y zonas de liquidez (FVG).
+        5. 💡 Veredicto Institucional (1-3 días): sesgo direccional y plan operativo — coherente con los puntos 1 y 2:
+           si el macro o el sentimiento van en contra del setup técnico, exige más confirmación o reduce el tamaño.
 
         REGLAS PARA EL PLAN DEL PUNTO 3 (obligatorias):
         - ENTRADA: anclada a un nivel real de la ESTRUCTURA (máx/mín 5-20 velas, high/low previo) o a un muro de opciones — nunca un número redondo inventado.
@@ -122,6 +135,7 @@ def analizar_con_gemini(
         Analiza el activo {simbolo} en temporalidad de {temporalidad}:
         - Precio actual: USD {precio_actual:.2f}
         {bloque_ciclo}
+        {f"- CONTEXTO MACRO GLOBAL (tasas, VIX, dólar — el viento de cola o en contra del riesgo): {macro_global}" if macro_global else ""}
         - Sentimiento Retail (Fear & Greed): {sentimiento if sentimiento else "No disponible"}
         - Actividad On-Chain (Escáner/Perfilado de Ballenas): {datos_onchain if datos_onchain else "Sin datos on-chain en esta sesión"}
         - Datos Técnicos (EMA 10/55/200, ADX, Monitor MACD, FVG): {datos_extra}
@@ -706,6 +720,10 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
         if st.button(f"Generar Análisis ({temporalidad}) 🤖", type="primary"):
             with st.spinner(f"Ensamblando contexto y consultando {proveedor_activo()}..."):
 
+                # ── 0. Contexto macro global Top-Down (VIX, tasas, curva, inflación)
+                ctx_macro_global = obtener_contexto_macro_global()
+                macro_global_str = ctx_macro_global.get("texto", "")
+
                 # ── 1. Datos técnicos completos: tendencia (EMAs/ADX) +
                 #       contexto operable (ATR, RSI, RVOL, estructura)
                 divergencia_txt = (
@@ -825,9 +843,11 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                     datos_onchain   = onchain_str,
                     ciclo_macro     = ciclo_str,
                     temporalidad    = temporalidad,
+                    macro_global    = macro_global_str,
                 )
 
             st.success("Análisis completado:")
+            mostrar_metricas_macro(ctx_macro_global)
             st.markdown(analisis)
             if enviar_telegram:
                 enviar_alerta_telegram(analisis)
