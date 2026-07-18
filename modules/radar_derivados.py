@@ -62,6 +62,13 @@ def analizar_muros_con_ia(
        del día. NO afirmes si fue compra o venta — esa información no existe en estos datos.
     3. VISIÓN MACRO (breve): ¿hacia dónde apuesta el Smart Money en 30/90/180 días?
 
+    Al FINAL del reporte añade un bloque de código con SOLO este JSON (números sin comillas):
+    ```json
+    {{"sesgo": "alcista|bajista|neutral", "direccion": "largo|corto|fuera", "entrada": 0.0, "stop": 0.0, "tp1": 0.0}}
+    ```
+    "sesgo" es la dirección del MERCADO; "direccion" es la OPERACIÓN del plan (pueden diferir).
+    Si recomiendas quedarse fuera, usa "direccion": "fuera" y 0 en los niveles.
+
     REGLA TÉCNICA CRÍTICA: NO USES EL SÍMBOLO DE DÓLAR. Usa 'USD' (ejemplo: USD 400).
     Usa viñetas cortas. Máximo 300 palabras.
     """
@@ -317,6 +324,7 @@ def escanear_flujo_institucional(
                 niveles_dia = calcular_niveles_dia(cadena, precio_spot)
                 niveles_dia["dte"] = dias_vencimiento
                 niveles_dia["vencimiento"] = fecha_str
+                niveles_dia["spot"] = precio_spot  # para el validador del plan en la UI
                 fig_visual = construir_grafico_opciones(
                     cadena, precio_spot, ticker_symbol, fecha_str,
                     max_pain=niveles_dia.get("max_pain"),

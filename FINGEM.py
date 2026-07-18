@@ -1038,7 +1038,22 @@ elif tipo_mercado == "🧱 Flujo de Opciones (Derivados)" and simbolo:
             st.markdown("### 🧱 Flujo Institucional (Todas las expiraciones)")
             st.dataframe(df_muros, width="stretch", hide_index=True)
             st.markdown("### 🧠 Setup de Trading y Visión Macro (IA)")
-            st.info(reporte_ia)
+
+            # Validación numérica del plan (mismo pipeline que Análisis Individual)
+            plan_d, reporte_limpio = extraer_plan(reporte_ia)
+            st.info(reporte_limpio)
+            if plan_d:
+                v = validar_plan(plan_d, niveles_dia.get("spot", 0) or 0, atr=None)
+                dir_v = v.get("direccion", "n/a")
+                if v.get("entrada") and dir_v not in ("fuera", "neutral", "n/a"):
+                    vc1, vc2, vc3, vc4 = st.columns(4)
+                    vc1.metric("Operación", str(dir_v).capitalize(),
+                               delta=f"sesgo mercado: {v.get('sesgo', 'n/a')}", delta_color="off")
+                    vc2.metric("Entrada", f"USD {v['entrada']:,.2f}")
+                    vc3.metric("Stop", f"USD {v['stop']:,.2f}")
+                    vc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" + (f" ({v['rb']})" if v.get('rb') else ""))
+                for aviso in v.get("avisos", []):
+                    (st.warning if aviso.startswith("⚠️") else st.info if aviso.startswith("ℹ️") else st.success)(aviso)
         else:
             st.warning(reporte_ia)
 
@@ -1229,13 +1244,29 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
 
             st.markdown("---")
 
-            # ── Reporte IA del ticker líder
+            # ── Reporte IA del ticker líder (con validación numérica del plan)
             if reporte_ia:
                 lider_nombre = df_swing["Ticker"].iloc[0] if not df_swing.empty else "líder"
                 st.subheader(f"🤖 Setup Accionable IA — {lider_nombre}")
-                st.info(reporte_ia)
+
+                plan_r, reporte_limpio = extraer_plan(reporte_ia)
+                st.info(reporte_limpio)
+                if plan_r:
+                    precio_lider = raw.get(lider_nombre, {}).get("precio", 0) or 0
+                    v = validar_plan(plan_r, precio_lider, atr=None)
+                    dir_v = v.get("direccion", "n/a")
+                    if v.get("entrada") and dir_v not in ("fuera", "neutral", "n/a"):
+                        rc1, rc2, rc3, rc4 = st.columns(4)
+                        rc1.metric("Operación", str(dir_v).capitalize(),
+                                   delta=f"sesgo mercado: {v.get('sesgo', 'n/a')}", delta_color="off")
+                        rc2.metric("Entrada", f"USD {v['entrada']:,.2f}")
+                        rc3.metric("Stop", f"USD {v['stop']:,.2f}")
+                        rc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" + (f" ({v['rb']})" if v.get('rb') else ""))
+                    for aviso in v.get("avisos", []):
+                        (st.warning if aviso.startswith("⚠️") else st.info if aviso.startswith("ℹ️") else st.success)(aviso)
+
                 if st.button("📤 Enviar reporte a Telegram"):
-                    enviar_alerta_telegram(f"🎯 *Radar Opciones v3 — {lider_nombre}*\n\n{reporte_ia}")
+                    enviar_alerta_telegram(f"🎯 *Radar Opciones v3 — {lider_nombre}*\n\n{reporte_limpio}")
 
 
 # ==========================================

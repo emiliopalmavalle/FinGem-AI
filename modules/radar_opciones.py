@@ -920,6 +920,13 @@ INSTRUCCIONES (respeta este orden exacto):
    Factor que invalidaria el setup
    Si IV Rank > 65%: recomendar spread especifico en lugar de compra simple
 
+Al FINAL del reporte añade un bloque de codigo con SOLO este JSON (numeros sin comillas):
+```json
+{{"sesgo": "alcista|bajista|neutral", "direccion": "largo|corto|fuera", "entrada": 0.0, "stop": 0.0, "tp1": 0.0}}
+```
+"sesgo" es la direccion del MERCADO; "direccion" es la OPERACION del plan (pueden diferir).
+Si recomiendas quedarse fuera, usa "direccion": "fuera" y 0 en los niveles.
+
 REGLA ABSOLUTA: Usa 'USD' en lugar del simbolo dolar.
 Maximo 450 palabras. Niveles numericos exactos. Sin frases genericas.
 """

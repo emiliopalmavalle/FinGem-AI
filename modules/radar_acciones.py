@@ -68,22 +68,29 @@ def _obtener_fundamentales_completos(empresa: yf.Ticker) -> dict:
     """Fallback a .info solo cuando el activo ya pasó el filtro técnico.
 
     Llamada más pesada — se ejecuta en el ~20-30% de los casos.
+    Incluye los ratios de la tabla del auditor: P/S (valoración por
+    ventas), ROE (eficiencia) y Deuda/EBITDA (riesgo financiero).
 
     Args:
         empresa: objeto yf.Ticker con sesión inyectada.
 
     Returns:
-        dict con pe_ratio, eps y nombre.
+        dict con pe_ratio, eps, nombre, ps_ratio, roe y deuda_ebitda.
     """
     try:
         info = empresa.info
+        deuda, ebitda = info.get('totalDebt'), info.get('ebitda')
         return {
-            'pe_ratio': info.get('trailingPE', 0) or 0,
-            'eps':      info.get('trailingEps', 0) or 0,
-            'nombre':   (info.get('shortName', '')[:20] or None),
+            'pe_ratio':     info.get('trailingPE', 0) or 0,
+            'eps':          info.get('trailingEps', 0) or 0,
+            'nombre':       (info.get('shortName', '')[:20] or None),
+            'ps_ratio':     info.get('priceToSalesTrailing12Months'),
+            'roe':          info.get('returnOnEquity'),
+            'deuda_ebitda': (deuda / ebitda) if (deuda and ebitda and ebitda > 0) else None,
         }
     except Exception:
-        return {'pe_ratio': 0, 'eps': 0, 'nombre': None}
+        return {'pe_ratio': 0, 'eps': 0, 'nombre': None,
+                'ps_ratio': None, 'roe': None, 'deuda_ebitda': None}
 
 
 def procesar_un_ticker(ticker: str) -> Optional[dict]:
@@ -149,13 +156,15 @@ def procesar_un_ticker(ticker: str) -> Optional[dict]:
         # fast_info no trae nombre, así que .info aplica a AMBOS candidatos
         # (momentum también: sin esto la tabla repetía el ticker como nombre)
         nombre = ticker
-        pe_ratio, eps = 0, 0
         moneda = info_base.get('moneda', 'USD')
 
         fundamentales = _obtener_fundamentales_completos(empresa)
         pe_ratio = fundamentales['pe_ratio']
         eps      = fundamentales['eps']
         nombre   = fundamentales.get('nombre') or nombre
+        ps_r     = fundamentales.get('ps_ratio')
+        roe_r    = fundamentales.get('roe')
+        de_r     = fundamentales.get('deuda_ebitda')
 
         resultado = {
             "ticker": ticker,
@@ -190,6 +199,9 @@ def procesar_un_ticker(ticker: str) -> Optional[dict]:
                 "Score":     int(score),
                 "Caida_Raw": caida_pct,
                 "P/E":       round(pe_ratio, 2),
+                "P/S":       f"{ps_r:.1f}x" if ps_r else "N/A",
+                "ROE":       f"{roe_r*100:.1f}%" if roe_r is not None else "N/A",
+                "D/EBITDA":  f"{de_r:.2f}x" if de_r is not None else "N/A",
                 "EPS":       f"{moneda} {eps:.2f}",
                 "vs SMA200": sma200_txt,
             }
@@ -310,7 +322,8 @@ def escaneo_institucional_dual(
         # no por caída pura: más caída no siempre es mejor oportunidad
         df = pd.DataFrame(datos).sort_values("Score_Raw", ascending=False).head(10)
         df['Descuento'] = df['Caida_Raw'].apply(lambda x: f"{x:.2f}% 🩸")
-        columnas = ['Ticker', 'Nombre', 'Precio', 'Score', 'Descuento', 'P/E', 'EPS', 'vs SMA200']
+        columnas = ['Ticker', 'Nombre', 'Precio', 'Score', 'Descuento',
+                    'P/E', 'P/S', 'ROE', 'D/EBITDA', 'EPS', 'vs SMA200']
         return df[columnas]
 
     def _construir_df_momentum(datos: list) -> pd.DataFrame:
