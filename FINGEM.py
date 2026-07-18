@@ -96,9 +96,11 @@ def analizar_con_gemini(
         Después de la conclusión, añade al FINAL un bloque de código con SOLO este JSON
         (números sin comillas, sin texto extra dentro del bloque):
         ```json
-        {"sesgo": "alcista|bajista|neutral", "entrada": 0.0, "stop": 0.0, "tp1": 0.0}
+        {"sesgo": "alcista|bajista|neutral", "direccion": "largo|corto|fuera", "entrada": 0.0, "stop": 0.0, "tp1": 0.0}
         ```
-        Si tu recomendación es quedarse fuera, usa "sesgo": "neutral" y pon 0 en los niveles."""
+        OJO: "sesgo" es la dirección más probable del MERCADO; "direccion" es la OPERACIÓN del plan.
+        Pueden diferir (ej.: sesgo bajista con un largo táctico de rebote). Si tu recomendación es
+        quedarse fuera, usa "direccion": "fuera" y pon 0 en los niveles."""
 
     # ── BOLSA (NY / MX)
     if "NY" in tipo_mercado or "MX" in tipo_mercado or "Análisis Individual" in tipo_mercado:
@@ -860,6 +862,7 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
 
                 # ── 6. Consenso + fundamentales + earnings próximos (solo bolsa)
                 recomendacion_str = "N/A"
+                fund_ui = {}  # métricas para la fila visible (tabla del auditor)
                 if "NY" in tipo_mercado or "MX" in tipo_mercado or "Individual" in tipo_mercado:
                     try:
                         # Una sola llamada .info para consenso Y fundamentales
@@ -867,16 +870,43 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                         info_ticker = tk_fund.info
                         recomendacion_str = info_ticker.get("recommendationKey", "N/A") or "N/A"
 
-                        # Fundamentales clave (auditoría P8): salud financiera real
+                        # Fundamentales clave (auditoría P8 + tabla del auditor):
+                        # valoración (P/E, P/S), eficiencia (ROE, margen) y
+                        # riesgo financiero (Deuda/EBITDA, FCF, deuda total)
                         _fmt_b = lambda v: f"USD {v/1e9:,.1f}B" if v else "N/A"
-                        fpe_val    = info_ticker.get('forwardPE')
-                        margen_val = info_ticker.get('operatingMargins')
-                        fpe_txt    = f"{fpe_val:.1f}" if fpe_val else "N/A"
-                        margen_txt = f"{margen_val*100:.1f}%" if margen_val else "N/A"
+                        pe_t   = info_ticker.get('trailingPE')
+                        fpe    = info_ticker.get('forwardPE')
+                        ps     = info_ticker.get('priceToSalesTrailing12Months')
+                        roe    = info_ticker.get('returnOnEquity')
+                        margen = info_ticker.get('operatingMargins')
+                        deuda  = info_ticker.get('totalDebt')
+                        ebitda = info_ticker.get('ebitda')
+                        fcf    = info_ticker.get('freeCashflow')
+                        deuda_ebitda = (deuda / ebitda) if (deuda and ebitda and ebitda > 0) else None
+
+                        # Yahoo omite trailingPE cuando las ganancias son negativas
+                        eps_t = info_ticker.get('trailingEps')
+                        if pe_t:
+                            pe_txt = f"{pe_t:.1f}x"
+                        elif eps_t is not None and eps_t < 0:
+                            pe_txt = "Negativo"  # como en la tabla del auditor (caso INTC)
+                        else:
+                            pe_txt = "N/A"
+                        fund_ui = {
+                            "P/E":          pe_txt,
+                            "P/S":          f"{ps:.1f}x" if ps else "N/A",
+                            "ROE":          f"{roe*100:.1f}%" if roe is not None else "N/A",
+                            "Deuda/EBITDA": f"{deuda_ebitda:.2f}x" if deuda_ebitda is not None else "N/A",
+                            "FCF":          _fmt_b(fcf),
+                        }
+
                         datos_extra_str += (
-                            f" FUNDAMENTALES: Free Cash Flow {_fmt_b(info_ticker.get('freeCashflow'))}, "
-                            f"Deuda total {_fmt_b(info_ticker.get('totalDebt'))}, "
-                            f"Forward P/E {fpe_txt}, Margen operativo {margen_txt}."
+                            f" FUNDAMENTALES — Valoración: P/E {fund_ui['P/E']}, "
+                            f"Forward P/E {f'{fpe:.1f}x' if fpe else 'N/A'}, P/S (ventas) {fund_ui['P/S']}. "
+                            f"Eficiencia: ROE {fund_ui['ROE']}, Margen operativo "
+                            f"{f'{margen*100:.1f}%' if margen else 'N/A'}. "
+                            f"Riesgo financiero: Deuda/EBITDA {fund_ui['Deuda/EBITDA']}, "
+                            f"Deuda total {_fmt_b(deuda)}, Free Cash Flow {_fmt_b(fcf)}."
                         )
 
                         # Earnings próximos: ningún plan a días debería ignorar un gap inminente
@@ -914,16 +944,31 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
             st.success("Análisis completado:")
             mostrar_metricas_macro(ctx_macro_global)
 
+            # ── 📊 Fila de fundamentales (tabla del auditor: valoración,
+            #     eficiencia y riesgo financiero de un vistazo)
+            if fund_ui:
+                fc = st.columns(5)
+                fc[0].metric("P/E (ganancias)",  fund_ui["P/E"])
+                fc[1].metric("P/S (ventas)",     fund_ui["P/S"])
+                fc[2].metric("ROE (eficiencia)", fund_ui["ROE"])
+                fc[3].metric("Deuda/EBITDA",     fund_ui["Deuda/EBITDA"])
+                fc[4].metric("Free Cash Flow",   fund_ui["FCF"])
+
             # ── Validación numérica del plan (auditoría P7):
             #    la IA redacta, la aritmética se verifica en Python
             plan, analisis_limpio = extraer_plan(analisis)
             st.markdown(analisis_limpio)
 
             if plan:
-                v = validar_plan(plan, precio_actual, atr=datos.get('atr_14'))
-                if v["entrada"] and v["sesgo"] != "neutral":
+                # ATR de sanidad solo en marcos cortos: en Semanal/Mensual el
+                # stop se ancla a estructura y el ATR de vela alta dispararía
+                # falsos avisos (espejo de regla_stop — parche del auditor)
+                atr_sanidad = datos.get('atr_14') if temporalidad in ("1 Hora", "4 Horas", "Diario") else None
+                v = validar_plan(plan, precio_actual, atr=atr_sanidad)
+                if v["entrada"] and v["direccion"] != "fuera":
                     pc1, pc2, pc3, pc4 = st.columns(4)
-                    pc1.metric("Sesgo", v["sesgo"].capitalize())
+                    pc1.metric("Operación", v["direccion"].capitalize(),
+                               delta=f"sesgo mercado: {v['sesgo']}", delta_color="off")
                     pc2.metric("Entrada", f"USD {v['entrada']:,.2f}")
                     pc3.metric("Stop", f"USD {v['stop']:,.2f}")
                     pc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" + (f" ({v['rb']})" if v['rb'] else ""))
