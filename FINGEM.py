@@ -965,14 +965,18 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                 # falsos avisos (espejo de regla_stop — parche del auditor)
                 atr_sanidad = datos.get('atr_14') if temporalidad in ("1 Hora", "4 Horas", "Diario") else None
                 v = validar_plan(plan, precio_actual, atr=atr_sanidad)
-                if v["entrada"] and v["direccion"] != "fuera":
+                # .get() defensivo: si la nube recarga FINGEM antes que los
+                # módulos (desfase de redeploy), un dict viejo sin "direccion"
+                # no debe tumbar el reporte completo
+                direccion_v = v.get("direccion") or v.get("sesgo", "n/a")
+                if v.get("entrada") and direccion_v not in ("fuera", "neutral"):
                     pc1, pc2, pc3, pc4 = st.columns(4)
-                    pc1.metric("Operación", v["direccion"].capitalize(),
-                               delta=f"sesgo mercado: {v['sesgo']}", delta_color="off")
+                    pc1.metric("Operación", str(direccion_v).capitalize(),
+                               delta=f"sesgo mercado: {v.get('sesgo', 'n/a')}", delta_color="off")
                     pc2.metric("Entrada", f"USD {v['entrada']:,.2f}")
                     pc3.metric("Stop", f"USD {v['stop']:,.2f}")
-                    pc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" + (f" ({v['rb']})" if v['rb'] else ""))
-                for aviso in v["avisos"]:
+                    pc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" + (f" ({v['rb']})" if v.get('rb') else ""))
+                for aviso in v.get("avisos", []):
                     (st.warning if aviso.startswith("⚠️") else st.info if aviso.startswith("ℹ️") else st.success)(aviso)
 
             if enviar_telegram:
