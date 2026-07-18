@@ -1043,7 +1043,9 @@ elif tipo_mercado == "🧱 Flujo de Opciones (Derivados)" and simbolo:
             plan_d, reporte_limpio = extraer_plan(reporte_ia)
             st.info(reporte_limpio)
             if plan_d:
-                v = validar_plan(plan_d, niveles_dia.get("spot", 0) or 0, atr=None)
+                # ATR diario del ticker: plan de 1-3 días → vara correcta
+                v = validar_plan(plan_d, niveles_dia.get("spot", 0) or 0,
+                                 atr=niveles_dia.get("atr_14"))
                 dir_v = v.get("direccion", "n/a")
                 if v.get("entrada") and dir_v not in ("fuera", "neutral", "n/a"):
                     vc1, vc2, vc3, vc4 = st.columns(4)
@@ -1252,8 +1254,11 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
                 plan_r, reporte_limpio = extraer_plan(reporte_ia)
                 st.info(reporte_limpio)
                 if plan_r:
-                    precio_lider = raw.get(lider_nombre, {}).get("precio", 0) or 0
-                    v = validar_plan(plan_r, precio_lider, atr=None)
+                    lider_raw = raw.get(lider_nombre, {})
+                    precio_lider = lider_raw.get("precio", 0) or 0
+                    # ATR diario ya calculado en el swing scan del líder
+                    atr_lider = (lider_raw.get("swing_scan") or {}).get("atr_14")
+                    v = validar_plan(plan_r, precio_lider, atr=atr_lider)
                     dir_v = v.get("direccion", "n/a")
                     if v.get("entrada") and dir_v not in ("fuera", "neutral", "n/a"):
                         rc1, rc2, rc3, rc4 = st.columns(4)

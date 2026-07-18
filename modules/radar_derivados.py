@@ -325,6 +325,19 @@ def escanear_flujo_institucional(
                 niveles_dia["dte"] = dias_vencimiento
                 niveles_dia["vencimiento"] = fecha_str
                 niveles_dia["spot"] = precio_spot  # para el validador del plan en la UI
+                # ATR(14) diario: vara de volatilidad para que el validador
+                # chequee el stop del plan 1-3d (descarga ligera de 3 meses)
+                try:
+                    hist_atr = ticker.history(period="3mo")
+                    if len(hist_atr) >= 15:
+                        tr = pd.concat([
+                            hist_atr['High'] - hist_atr['Low'],
+                            (hist_atr['High'] - hist_atr['Close'].shift(1)).abs(),
+                            (hist_atr['Low']  - hist_atr['Close'].shift(1)).abs(),
+                        ], axis=1).max(axis=1)
+                        niveles_dia["atr_14"] = float(tr.rolling(14).mean().iloc[-1])
+                except Exception:
+                    pass  # sin ATR el validador simplemente omite ese chequeo
                 fig_visual = construir_grafico_opciones(
                     cadena, precio_spot, ticker_symbol, fecha_str,
                     max_pain=niveles_dia.get("max_pain"),

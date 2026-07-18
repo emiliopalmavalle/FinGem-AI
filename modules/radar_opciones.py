@@ -381,8 +381,13 @@ def _score_swing_ticker(hist: pd.DataFrame, datos_opciones: dict | None,
     if calls_frescos: razones.append(f"🔥 Vol inusual en CALLs x{calls_frescos} (dirección desconocida)")
     if puts_frescos:  razones.append(f"🔥 Vol inusual en PUTs x{puts_frescos} (dirección desconocida)")
 
+    # ATR(14) diario ya calculado para el Keltner — se expone para que el
+    # validador del plan chequee el stop contra la volatilidad real
+    atr_14 = float(ind["atr14"].iloc[-1]) if not np.isnan(ind["atr14"].iloc[-1]) else None
+
     return {
         "senal": senal, "score_alcista": score_alcista, "score_bajista": score_bajista,
+        "atr_14": atr_14,
         "squeeze_activo": squeeze, "squeeze_release": sq_rel,
         "cruce_ema": cruce_str, "rsi": round(rsi, 1),
         "rvol_precio": round(rvol_p, 2), "iv_rank_pct": iv_rank_pct,
