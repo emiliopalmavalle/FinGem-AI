@@ -318,6 +318,8 @@ def llamar_gemini(
                     _set_cached(prompt, texto)
                 with _gemini_lock:
                     st.session_state[_KEY_CONTADOR] += 1
+                    # Registrar qué modelo respondió (para la etiqueta de autoría)
+                    st.session_state["_gemini_modelo_usado"] = modelo
 
                 # Badge informativo en sidebar (no interrumpe el flujo)
                 try:

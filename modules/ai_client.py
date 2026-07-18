@@ -158,8 +158,31 @@ def _generar_cacheado(prompt: str) -> tuple[str, str]:
 # API PÚBLICA
 # ══════════════════════════════════════════════════════
 
+def _etiqueta_modelo(proveedor: str) -> str:
+    """Nombre legible del modelo que generó la respuesta."""
+    if proveedor == "claude":
+        return f"Claude Opus 4.8 (Anthropic · {MODELO_CLAUDE})"
+    if proveedor == "gemini":
+        modelo = st.session_state.get("_gemini_modelo_usado", "gemini-2.5-flash")
+        return f"Gemini (Google · {modelo})"
+    return "Motor local (sin IA)"
+
+
+def proveedor_activo() -> str:
+    """Nombre corto del proveedor que atenderá la próxima llamada (para spinners)."""
+    if _claude_disponible():
+        return "Claude Opus 4.8"
+    if _config["gemini_key"]:
+        return "Gemini"
+    return "el motor local"
+
+
 def llamar_ia(prompt: str, contexto_fallback: dict | None = None) -> str:
     """Punto de entrada único para toda la IA de la terminal.
+
+    Toda respuesta de IA real se encabeza con la línea de autoría
+    "🧠 Análisis generado por: <modelo>" — así cada reporte (pantalla
+    y Telegram) declara qué IA y qué versión lo produjo.
 
     Args:
         prompt: texto completo del prompt.
@@ -172,9 +195,10 @@ def llamar_ia(prompt: str, contexto_fallback: dict | None = None) -> str:
         return "❌ No hay API keys de IA configuradas (ANTHROPIC_API_KEY / GEMINI_API_KEY)."
 
     try:
-        texto, _proveedor = _generar_cacheado(prompt)
-        return texto
+        texto, proveedor = _generar_cacheado(prompt)
+        return f"🧠 *Análisis generado por: {_etiqueta_modelo(proveedor)}*\n\n{texto}"
     except _ProveedoresAgotadosError:
+        # El reporte local ya se anuncia a sí mismo en su encabezado
         return _generar_fallback(contexto_fallback or {})
 
 

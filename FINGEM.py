@@ -11,7 +11,7 @@ from deep_translator import GoogleTranslator
 from modules.radar_acciones import escaneo_institucional_dual, buscar_joyas_ocultas, buscar_universo_bmv
 from modules.radar_derivados import escanear_flujo_institucional
 from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_radar, escanear_calls_baratos
-from modules.ai_client import configurar_ia, llamar_ia, mostrar_estado_ia_sidebar
+from modules.ai_client import configurar_ia, llamar_ia, mostrar_estado_ia_sidebar, proveedor_activo
 from modules.auth import requerir_login, mostrar_usuario_sidebar
 from modules.motor_grafico import construir_grafico_tecnico
 from modules.procesador_datos import procesar_datos_tecnicos, descargar_historia
@@ -704,7 +704,7 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
         enviar_telegram = st.checkbox("📤 Enviar copia de este reporte a Telegram", value=False)
 
         if st.button(f"Generar Análisis ({temporalidad}) 🤖", type="primary"):
-            with st.spinner("Ensamblando contexto y consultando Gemini..."):
+            with st.spinner(f"Ensamblando contexto y consultando {proveedor_activo()}..."):
 
                 # ── 1. Datos técnicos completos: tendencia (EMAs/ADX) +
                 #       contexto operable (ATR, RSI, RVOL, estructura)
