@@ -9,6 +9,7 @@ from deep_translator import GoogleTranslator
 # 📦 IMPORTACIÓN DE MÓDULOS (ARQUITECTURA)
 # ==========================================
 from modules.radar_acciones import escaneo_institucional_dual, buscar_joyas_ocultas, buscar_universo_bmv
+from modules.radar_etfs import escanear_etfs, ETFS_NY, ETFS_BMV
 from modules.radar_derivados import escanear_flujo_institucional
 from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_radar, escanear_calls_baratos
 from modules.ai_client import configurar_ia, llamar_ia, mostrar_estado_ia_sidebar, proveedor_activo
@@ -423,6 +424,7 @@ tipo_mercado = st.sidebar.radio(
         "📈 Análisis Individual (NY / MX)",
         "🪙 Criptomonedas",
         "🌐 Escáner Global (Value/Momentum)",
+        "🧺 Radar de ETFs (NY / BMV)",
         "🧱 Flujo de Opciones (Derivados)",
         "🎯 Radar de Opciones (Score Quant)",
         "💸 CALLs Baratos (Capital Pequeño)",
@@ -545,10 +547,6 @@ elif tipo_mercado == "🌐 Escáner Global (Value/Momentum)":
             "WFC, DIS, CSCO, ACN, MCD, LIN, INTU, IBM, QCOM, CAT, GE, TXN, AMAT, ISRG, PM, "
             "NOW, UNP, COP, GS, AXP"
         ),
-        "🧺 Top 30 ETFs (Sectores y Macro)": (
-            "SPY, QQQ, DIA, IWM, VOO, VTI, GLD, SLV, USO, UNG, XLE, XLF, XLK, XLV, XLI, "
-            "XLY, XLP, XLU, XLB, XLRE, XLC, ARKK, SMH, KRE, EEM, TLT, HYG, LQD, XBI, XOP"
-        ),
         "🇲🇽 BMV (IPC Ampliado — 36 emisoras)": (
             "AC.MX, ALSEA.MX, AMXB.MX, ASURB.MX, BBAJIOO.MX, BIMBOA.MX, BOLSAA.MX, "
             "CEMEXCPO.MX, CHDRAUIB.MX, CUERVO.MX, FEMSAUBD.MX, GAPB.MX, GCARSOA1.MX, "
@@ -617,33 +615,77 @@ elif tipo_mercado == "🌐 Escáner Global (Value/Momentum)":
                 )
             else:
                 # El motor de Valor es solo-acciones (los ETFs no tienen P/E ni
-                # EPS), así que un universo de ETFs SIEMPRE saldrá vacío aquí:
-                # no es un fallo. Si detectamos ETFs, redirigimos a Momentum ETFs.
-                es_universo_etf = ("ETF" in seleccion_universo) or (
-                    df_mom_acc.empty and not df_mom_etf.empty
-                )
-                if es_universo_etf:
+                # EPS). Si el universo trae ETFs (lista personalizada), el valor
+                # sale vacío por diseño: se analizan en el módulo Radar de ETFs.
+                if not df_mom_etf.empty:
                     st.info(
-                        "💡 Este universo son **ETFs** — el análisis de Valor (P/E, EPS) solo "
-                        "aplica a acciones individuales. Revisa la sección **🧺 Momentum ETFs** abajo."
+                        "💡 Hay **ETFs** en este universo — el análisis de Valor (P/E, EPS) solo "
+                        "aplica a acciones. Para ver ETFs y su condición usa el módulo "
+                        "**🧺 Radar de ETFs (NY / BMV)** en el panel izquierdo."
                     )
                 else:
                     st.warning("No se encontraron acciones con descuento significativo y fundamentales sanos.")
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("🏢 Momentum Acciones")
-                if not df_mom_acc.empty:
-                    st.dataframe(df_mom_acc, width="stretch", hide_index=True)
-                else:
-                    st.warning("No hay acciones rompiendo al alza con volumen.")
+            st.subheader("🏢 Momentum Acciones")
+            if not df_mom_acc.empty:
+                st.dataframe(df_mom_acc, width="stretch", hide_index=True)
+            else:
+                st.warning("No hay acciones rompiendo al alza con volumen.")
 
-            with col2:
-                st.subheader("🧺 Momentum ETFs")
-                if not df_mom_etf.empty:
-                    st.dataframe(df_mom_etf, width="stretch", hide_index=True)
-                else:
-                    st.warning("No hay ETFs rompiendo al alza con volumen.")
+
+# ==========================================
+# 🧺 MÓDULO: RADAR DE ETFs (NY / BMV)
+# ==========================================
+# Sección propia para ETFs (separada del Escáner Global de acciones).
+# Muestra los mejores ETFs de cada bolsa y su condición técnica:
+# tendencia, momentum semanal, RVOL y distancia al máximo de 52s.
+# ==========================================
+elif tipo_mercado == "🧺 Radar de ETFs (NY / BMV)":
+    st.header("🧺 Radar de ETFs")
+    st.write(
+        "Los ETFs más líquidos de cada bolsa con su **condición técnica** actual, "
+        "ordenados de más fuerte a más débil. "
+        "Condición: 🟢 Fuerte (sobre SMA200 y subiendo) · 🟡 Neutral · 🔴 Débil."
+    )
+
+    bolsa_etf = st.radio(
+        "Selecciona la bolsa:",
+        ["🇺🇸 Bolsa de NY (USD)", "🇲🇽 Bolsa Mexicana (BMV — MXN)"],
+        horizontal=True,
+    )
+    catalogo_etf = ETFS_NY if bolsa_etf.startswith("🇺🇸") else ETFS_BMV
+
+    if bolsa_etf.startswith("🇲🇽"):
+        st.caption(
+            "BMV: NAFTRAC/MEXTRAC son los locales del IPC; el resto son listados "
+            "SIC de ETFs internacionales cotizados en pesos. Precios en MXN."
+        )
+
+    st.markdown("---")
+
+    if st.button("🔭 Escanear ETFs", type="primary", width="stretch"):
+        with st.spinner(f"Analizando {len(catalogo_etf)} ETFs en paralelo..."):
+            df_etf = escanear_etfs(catalogo_etf)
+
+        if df_etf.empty:
+            st.warning(
+                "⚠️ No se obtuvieron datos. Puede ser un rate-limit temporal de "
+                "Yahoo — reintenta en unos segundos."
+            )
+        else:
+            fuertes = int((df_etf["Condición"] == "🟢 Fuerte").sum())
+            debiles = int((df_etf["Condición"] == "🔴 Débil").sum())
+            c1, c2, c3 = st.columns(3)
+            c1.metric("ETFs escaneados", len(df_etf))
+            c2.metric("🟢 En fuerza", fuertes)
+            c3.metric("🔴 Débiles", debiles)
+
+            st.dataframe(df_etf, width="stretch", hide_index=True)
+            st.caption(
+                "**Semana**: cambio en 5 sesiones · **RVOL**: volumen vs promedio 20d · "
+                "**Tendencia**: posición vs SMA200 (✅ encima / ⚠️ debajo) · "
+                "**vs Máx 52s**: distancia al máximo de 52 semanas."
+            )
 
 
 # ==========================================
