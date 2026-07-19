@@ -8,7 +8,10 @@ from deep_translator import GoogleTranslator
 # ==========================================
 # 📦 IMPORTACIÓN DE MÓDULOS (ARQUITECTURA)
 # ==========================================
-from modules.radar_acciones import escaneo_institucional_dual, buscar_joyas_ocultas, buscar_universo_bmv
+from modules.radar_acciones import (
+    escaneo_institucional_dual, buscar_joyas_ocultas,
+    buscar_universo_bmv, buscar_universo_flujo,
+)
 from modules.radar_etfs import escanear_etfs, ETFS_NY, ETFS_BMV
 from modules.radar_derivados import escanear_flujo_institucional
 from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_radar, escanear_calls_baratos
@@ -1389,6 +1392,23 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
 # Datos: Yahoo Finance (los mismos que ve Webull).
 # ==========================================
 
+OPCION_FLUJO = "🔥 Flujo inusual (dinámico)"
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def _universo_flujo_cacheado(precio_min: float, precio_max: float, volumen_min: int) -> list[str]:
+    """Screener de flujo con caché de 3 min.
+
+    Sin la caché, cada rerun de Streamlit (mover CUALQUIER slider) dispararía
+    un screener nuevo a Yahoo → castiga el rate limit. La caché reutiliza el
+    resultado salvo que cambien los filtros del flujo; 3 min es coherente con
+    'lo que se mueve hoy'.
+    """
+    return buscar_universo_flujo(
+        precio_min=precio_min, precio_max=precio_max, volumen_min=volumen_min
+    )
+
+
 UNIVERSOS_BARATOS = {
     "💸 Acciones baratas líquidas (< USD 30)": [
         "F", "NIO", "SOFI", "AAL", "T", "PFE", "VALE", "ITUB",
@@ -1439,19 +1459,65 @@ if tipo_mercado == "💸 CALLs Baratos (Capital Pequeño)":
     # Preselección + campo de lista manual SIEMPRE visible (mismo patrón que
     # derivados): no hace falta abrir/scrollear el desplegable para escribir
     # tu propia lista, y el dropdown queda corto y no se corta al fondo.
-    universo_b = st.sidebar.selectbox("Universo:", list(UNIVERSOS_BARATOS.keys()))
+    # El tercer universo (flujo) es dinámico: se descubre con un screener.
+    universo_b = st.sidebar.selectbox(
+        "Universo:", list(UNIVERSOS_BARATOS.keys()) + [OPCION_FLUJO]
+    )
+
+    # Sliders del screener SOLO cuando se elige el universo dinámico
+    if universo_b == OPCION_FLUJO:
+        st.sidebar.caption("Filtros del screener dinámico:")
+        rango_precio = st.sidebar.slider(
+            "💲 Rango de precio del subyacente (USD):",
+            min_value=1, max_value=100, value=(2, 60), step=1,
+            help="Acota a precios donde el contrato cabe en presupuesto pequeño. "
+                 "Precios muy bajos (<USD 2) concentran los pump-and-dump.",
+        )
+        vol_min_m = st.sidebar.select_slider(
+            "🔊 Volumen diario mínimo del subyacente (millones):",
+            options=[0.5, 1, 2, 5, 10, 20], value=2,
+            help="Más volumen = más difícil de manipular con poco dinero. "
+                 "Subirlo filtra los nombres finos y sospechosos.",
+        )
+
     lista_manual_raw = st.sidebar.text_input(
         "…o escribe tu propia lista (coma):",
         "",
         help="Déjalo vacío para usar el universo de arriba. Ej: F, NIO, SOFI, SNAP",
     ).strip()
+
+    # Prioridad: lista manual > universo elegido (estático o dinámico)
     if lista_manual_raw:
         lista_baratos = [t.strip().upper() for t in lista_manual_raw.split(",") if t.strip()]
+    elif universo_b == OPCION_FLUJO:
+        with st.spinner("🔥 Rastreando nombres con actividad inusual hoy..."):
+            lista_baratos = _universo_flujo_cacheado(
+                float(rango_precio[0]), float(rango_precio[1]), int(vol_min_m * 1_000_000)
+            )
+        if not lista_baratos:
+            st.warning("⚠️ El screener no devolvió nombres. Prueba ampliar el rango "
+                       "de precio o bajar el volumen mínimo, o reintenta en un minuto.")
     else:
         lista_baratos = UNIVERSOS_BARATOS[universo_b]
 
     st.write(f"**Universo:** {universo_b} — `{', '.join(lista_baratos)}`")
     st.markdown("---")
+
+    # Banner de riesgo obligatorio para el universo dinámico: informar, no esconder.
+    if universo_b == OPCION_FLUJO:
+        st.warning(
+            "⚠️ **Universo de alto riesgo — analiza a fondo antes de operar.**\n\n"
+            "Estos nombres salen por su actividad inusual de HOY, que es también "
+            "donde más abundan las trampas:\n"
+            "- **Prima inflada / IV crush:** el volumen dispara la volatilidad implícita; "
+            "puedes pagar el call carísimo y perder aunque el precio suba. Mira la columna "
+            "**IV** y la de **⚠️ Earnings** antes de entrar.\n"
+            "- **Pump-and-dump:** un volumen repentino en un nombre pequeño puede ser un "
+            "movimiento coordinado que se desinfla igual de rápido.\n"
+            "- **Falsos positivos:** volumen alto ≠ dirección alcista. Puede ser venta.\n\n"
+            "La herramienta te acerca al flujo; **no distingue el flujo legítimo del cebo**. "
+            "Ese filtro es tuyo. Con CALLs, la pérdida máxima es el 100% de la prima."
+        )
 
     if st.button("🔍 Buscar CALLs dentro del presupuesto", type="primary", width="stretch"):
         with st.spinner(f"Escaneando cadenas de opciones de {len(lista_baratos)} activos..."):
@@ -1487,6 +1553,12 @@ if tipo_mercado == "💸 CALLs Baratos (Capital Pequeño)":
                 "Breakeven = precio que debe alcanzar la acción al vencimiento para no perder. "
                 "% al BE = cuánto tiene que subir el subyacente. "
                 "Delta ≈ probabilidad aproximada de terminar ITM y sensibilidad al precio. "
-                "El Score premia delta cercana a 0.40, breakeven cercano, spread bajo y OI alto."
+                "El Score premia delta cercana a 0.40, breakeven cercano, IV baja, spread bajo y OI alto."
             )
+            if universo_b == OPCION_FLUJO:
+                st.caption(
+                    "🔥 En el universo dinámico, desconfía de **IV > 80%**: suele ser prima inflada "
+                    "que se desploma tras el evento. Un call con IV altísima necesita un movimiento "
+                    "enorme solo para no perder."
+                )
 

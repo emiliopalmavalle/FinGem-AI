@@ -279,6 +279,51 @@ def buscar_universo_bmv(max_resultados: int = 30) -> list[str]:
         return []
 
 
+def buscar_universo_flujo(
+    precio_min: float = 2.0,
+    precio_max: float = 60.0,
+    volumen_min: int = 2_000_000,
+    cambio_min: float = 2.0,
+    max_resultados: int = 40,
+) -> list[str]:
+    """Universo dinámico de nombres con actividad inusual reciente.
+
+    A diferencia de las listas estáticas ("< USD 30"), descubre en vivo los
+    tickers donde HOY hay volumen y movimiento — que es donde aparecen los
+    CALLs baratos con catalizador real. Yahoo no expone volumen de OPCIONES
+    en el screener, así que se usa el volumen del SUBYACENTE + rango de precio
+    + % de cambio del día como proxy; el filtro fino de liquidez de opciones
+    (OI, spread) lo aplica después `escanear_calls_baratos`.
+
+    ⚠️ Este universo es también donde más abundan pump-and-dumps y primas
+    infladas. Es una lista de CANDIDATOS A INVESTIGAR, no de oportunidades
+    confirmadas.
+
+    Args:
+        precio_min/precio_max: rango de precio del subyacente (USD).
+        volumen_min: volumen diario mínimo del subyacente.
+        cambio_min: % de cambio mínimo del día (sesga hacia lo que se mueve hoy).
+        max_resultados: tope de símbolos a devolver.
+
+    Returns:
+        Lista de símbolos ordenados por volumen (vacía si Yahoo falla).
+    """
+    try:
+        consulta = yf.EquityQuery('and', [
+            yf.EquityQuery('gt', ['dayvolume', volumen_min]),
+            yf.EquityQuery('gt', ['intradayprice', precio_min]),
+            yf.EquityQuery('lt', ['intradayprice', precio_max]),
+            yf.EquityQuery('gt', ['percentchange', cambio_min]),
+            yf.EquityQuery('is-in', ['exchange', 'NMS', 'NYQ']),  # solo NASDAQ/NYSE, evita OTC
+        ])
+        respuesta = yf.screen(
+            consulta, sortField='dayvolume', sortAsc=False, size=max_resultados
+        )
+        return [q['symbol'] for q in respuesta.get('quotes', []) if q.get('symbol')]
+    except Exception:
+        return []
+
+
 def escaneo_institucional_dual(
     lista_tickers: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
