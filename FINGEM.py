@@ -396,6 +396,19 @@ def escanear_anomalias_btc() -> dict:
 # ==========================================
 st.set_page_config(page_title="Terminal Financiero AI", page_icon="📈", layout="wide")
 
+# El dropdown de los selectbox se desplegaba hacia abajo y la ventana lo cortaba
+# (la opción del fondo quedaba inalcanzable). Limitamos el alto de la lista para
+# que haga scroll interno en vez de salirse de la pantalla.
+st.markdown(
+    """
+    <style>
+    ul[role="listbox"] { max-height: 45vh !important; overflow-y: auto !important; }
+    section[data-testid="stSidebar"] { overflow-y: auto; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # 🔐 Llave de entrada: nada se renderiza sin autenticación
 requerir_login()
 
@@ -507,14 +520,19 @@ elif tipo_mercado == "🧱 Flujo de Opciones (Derivados)":
         "Tesla (TSLA)":      "TSLA",
         "Apple (AAPL)":      "AAPL",
     }
+    # Preselección corta (5 ítems) para que el dropdown no se corte al fondo
+    # del sidebar, + campo manual SIEMPRE visible: así no hace falta abrir ni
+    # scrollear el desplegable para escribir un ticker cualquiera.
     seleccion = st.sidebar.selectbox(
-        "Activo a escanear:", list(opciones_derivados.keys()) + ["✍️ Búsqueda Manual"]
+        "Activo a escanear:", list(opciones_derivados.keys())
     )
-    simbolo = (
-        st.sidebar.text_input("Símbolo:", "NVDA").upper()
-        if seleccion == "✍️ Búsqueda Manual"
-        else opciones_derivados.get(seleccion, "")
-    )
+    simbolo_manual = st.sidebar.text_input(
+        "…o escribe un símbolo manual:",
+        "",
+        help="Déjalo vacío para usar la preselección de arriba. "
+             "Formato exacto de Yahoo Finance: NVDA, SPY, IBIT, TSLA.",
+    ).upper().strip()
+    simbolo = simbolo_manual if simbolo_manual else opciones_derivados.get(seleccion, "")
 
 elif tipo_mercado == "🌐 Escáner Global (Value/Momentum)":
     st.header("📡 Radar Institucional Separado")
@@ -1068,18 +1086,47 @@ elif tipo_mercado == "🧱 Flujo de Opciones (Derivados)" and simbolo:
 # genera score 0-100 por horizonte temporal.
 # ==========================================
 
+# Todos los tickers de estas listas tienen cadenas de opciones líquidas
+# (volumen alto y spreads estrechos). No añadir símbolos sin mercado de
+# opciones profundo: el radar los descarta y desperdicia requests a Yahoo.
 UNIVERSOS_RADAR = {
     "🔥 Activos de Alta Liquidez (default)": [
         "SPY", "QQQ", "AAPL", "NVDA", "TSLA", "META", "MSFT",
-        "AMZN", "AMD", "GOOGL", "IBIT", "GLD", "TLT",
+        "AMZN", "AMD", "GOOGL", "AVGO", "NFLX", "IBIT", "GLD", "TLT",
     ],
     "🏦 Mega-Caps + Bancos": [
-        "JPM", "GS", "BAC", "WFC", "V", "MA", "BRK-B",
-        "XLF", "AAPL", "MSFT", "NVDA", "AMZN",
+        "JPM", "GS", "BAC", "WFC", "MS", "C", "V", "MA", "AXP",
+        "SCHW", "BRK-B", "XLF", "AAPL", "MSFT", "AMZN",
     ],
     "⚡ Tecnología / Semis": [
-        "NVDA", "AMD", "INTC", "AVGO", "QCOM", "AMAT",
-        "SMH", "SOXX", "TSM", "ARM", "MRVL",
+        "NVDA", "AMD", "INTC", "AVGO", "QCOM", "AMAT", "MU", "LRCX",
+        "SMH", "SOXX", "TSM", "ASML", "ARM", "MRVL", "ON",
+    ],
+    "🚀 Alta Volatilidad / Momentum": [
+        "TSLA", "NVDA", "PLTR", "COIN", "MSTR", "AMD", "MARA", "RIOT",
+        "SOFI", "HOOD", "RIVN", "AFRM", "SNAP", "RBLX", "U",
+    ],
+    "🛢️ Energía + Materias Primas": [
+        "XLE", "XOM", "CVX", "OXY", "SLB", "COP", "USO", "UNG",
+        "GLD", "SLV", "FCX", "GDX",
+    ],
+    "🩺 Salud / Farma": [
+        "LLY", "UNH", "JNJ", "PFE", "MRK", "ABBV", "AMGN", "MRNA",
+        "BMY", "GILD", "XLV",
+    ],
+    "🛒 Consumo + Retail": [
+        "AMZN", "WMT", "COST", "HD", "MCD", "KO", "PEP", "NKE",
+        "SBUX", "DIS", "TGT", "LULU", "XLY",
+    ],
+    "🐉 China ADRs": [
+        "BABA", "PDD", "JD", "NIO", "BIDU", "LI", "XPEV", "FXI", "KWEB",
+    ],
+    "🪙 Cripto-vinculados": [
+        "IBIT", "MSTR", "COIN", "MARA", "RIOT", "CLSK", "GBTC", "HOOD",
+    ],
+    "📊 ETFs / Índices Macro": [
+        "SPY", "QQQ", "IWM", "DIA", "TLT", "HYG", "GLD", "SLV",
+        "VXX", "EEM", "XLF", "XLK", "XLE", "SMH",
     ],
     "✍️ Lista personalizada": [],
 }
