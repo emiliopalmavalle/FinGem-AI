@@ -104,7 +104,7 @@ def _dibujar_soportes_resistencias(fig, hist, ann_bg="rgba(19,23,34,0.65)"):
         )
         fig.add_annotation(
             x=1, y=precio, xref="x domain", yref="y",
-            text=f"{etiqueta} {precio:,.2f} ({toques})",
+            text=f"{precio:,.2f} ({toques})",
             showarrow=False, xanchor="right", yanchor=yanchor,
             font=dict(color=color, size=10),
             bgcolor=ann_bg,
