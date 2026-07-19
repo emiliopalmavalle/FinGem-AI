@@ -751,12 +751,17 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
 
         # --- Panel de Toggles ---
         st.write("🎛️ **Capas de Trading (On/Off)**")
-        t_col1, t_col2, t_col3 = st.columns(3)
+        # El toggle de halving solo aparece donde tiene sentido (cripto semanal)
+        es_cripto_semanal = temporalidad == "Semanal" and "Cripto" in tipo_mercado
+        t_cols = st.columns(5 if es_cripto_semanal else 4)
         toggles = {
-            "EMAs": t_col1.toggle("🧠 EMAs Institucionales", value=True),
-            "SR":   t_col2.toggle("📏 Soportes y Resistencias", value=False),
-            "SMI":  t_col3.toggle("🌊 Oscilador SMI", value=False),
+            "EMAs":         t_cols[0].toggle("🧠 EMAs", value=True),
+            "SR":           t_cols[1].toggle("📏 S/R", value=False),
+            "SMI":          t_cols[2].toggle("🌊 SMI", value=False),
+            "Fondo_Oscuro": t_cols[3].toggle("🌙 Fondo oscuro", value=True),
         }
+        if es_cripto_semanal:
+            toggles["Halving"] = t_cols[4].toggle("🔮 Ciclo Halving", value=True)
 
         # --- Gráfico Plotly ---
         fig = construir_grafico_tecnico(
@@ -767,8 +772,8 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
             'scrollZoom': True, 'displayModeBar': False
         })
 
-        # Leyenda Halving (solo cripto semanal)
-        if temporalidad == "Semanal" and "Cripto" in tipo_mercado:
+        # Leyenda Halving (solo cripto semanal y con el toggle encendido)
+        if es_cripto_semanal and toggles.get("Halving", True):
             st.markdown("""
             <div style="padding:12px;border-radius:8px;background-color:rgba(255,255,255,0.05);
                         border:1px solid rgba(255,255,255,0.1);margin-top:5px;margin-bottom:15px;">

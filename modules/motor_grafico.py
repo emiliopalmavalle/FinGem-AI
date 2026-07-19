@@ -82,14 +82,15 @@ def _calcular_niveles_sr(hist, lookback=6, tol_pct=0.010, max_por_lado=3, ventan
     return {'soportes': soportes, 'resistencias': resistencias}
 
 
-def _dibujar_soportes_resistencias(fig, hist):
+def _dibujar_soportes_resistencias(fig, hist, ann_bg="rgba(19,23,34,0.65)"):
     """Dibuja las líneas horizontales de S/R en la fila de precio.
 
     Rojo = resistencia (sobre el precio), verde = soporte (bajo el precio).
     La opacidad crece con el número de toques: nivel más tocado = más visible.
 
     Usa add_shape/add_annotation (no add_hline): en Plotly 6.x add_hline es
-    un no-op sobre figuras make_subplots, no dibuja nada.
+    un no-op sobre figuras make_subplots, no dibuja nada. `ann_bg` es el fondo
+    de la etiqueta (se adapta al tema claro/oscuro).
     """
     niveles = _calcular_niveles_sr(hist)
 
@@ -106,7 +107,7 @@ def _dibujar_soportes_resistencias(fig, hist):
             text=f"{etiqueta} {precio:,.2f} ({toques})",
             showarrow=False, xanchor="right", yanchor=yanchor,
             font=dict(color=color, size=10),
-            bgcolor="rgba(19,23,34,0.65)",
+            bgcolor=ann_bg,
             row=1, col=1,
         )
 
@@ -120,6 +121,22 @@ def construir_grafico_tecnico(hist, ha_df, ema_200, temporalidad, tipo_mercado, 
     show_emas = toggles.get("EMAs", True)
     show_sr = toggles.get("SR", False)
     show_smi = toggles.get("SMI", False)
+    fondo_oscuro = toggles.get("Fondo_Oscuro", True)
+    show_halving = toggles.get("Halving", True)
+
+    # 🎨 Paleta según tema. Las líneas que estaban hardcodeadas en blanco
+    # (EMA 200, ADX) se vuelven invisibles en fondo claro, así que su color
+    # (y el fondo de las etiquetas S/R) dependen del tema.
+    if fondo_oscuro:
+        tema_template = "plotly_dark"
+        color_fondo   = "#131722"
+        color_linea   = "white"
+        ann_bg        = "rgba(19,23,34,0.65)"
+    else:
+        tema_template = "plotly_white"
+        color_fondo   = "#FFFFFF"
+        color_linea   = "#131722"
+        ann_bg        = "rgba(255,255,255,0.80)"
 
     # Si SMI está activo, necesitamos 3 filas en lugar de 2
     filas = 3 if show_smi else 2
@@ -139,18 +156,18 @@ def construir_grafico_tecnico(hist, ha_df, ema_200, temporalidad, tipo_mercado, 
     if show_emas:
         fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_10'], mode='lines', line=dict(color='#2962FF', width=1.5), name='EMA 10'), row=1, col=1)
         fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_55'], mode='lines', line=dict(color='#FF6D00', width=2), name='EMA 55'), row=1, col=1)
-        if ema_200 > 0: fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_200'], mode='lines', line=dict(color='white', width=2), name='EMA 200'), row=1, col=1)
+        if ema_200 > 0: fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_200'], mode='lines', line=dict(color=color_linea, width=2), name='EMA 200'), row=1, col=1)
 
     # 🎚️ TOGGLE: Soportes y Resistencias (pivotes swing estilo LuxAlgo)
     if show_sr:
-        _dibujar_soportes_resistencias(fig, hist)
+        _dibujar_soportes_resistencias(fig, hist, ann_bg=ann_bg)
 
     # Fila 2: Monitor y ADX (Base)
     colores_monitor = ['#089981' if (val >= 0 and val > hist['Monitor'].iloc[i-1]) else '#006400' if val >= 0 else '#F23645' if (val < 0 and val < hist['Monitor'].iloc[i-1]) else '#8B0000' for i, val in enumerate(hist['Monitor'])]
     colores_monitor[0] = 'gray'
     
     fig.add_trace(go.Bar(x=hist.index, y=hist['Monitor'], marker_color=colores_monitor, name='Monitor', opacity=0.8), row=2, col=1, secondary_y=False)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['ADX'], mode='lines', line=dict(color='white', width=1.5), name='ADX'), row=2, col=1, secondary_y=True)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['ADX'], mode='lines', line=dict(color=color_linea, width=1.5), name='ADX'), row=2, col=1, secondary_y=True)
     fig.add_hline(y=23, line_dash="dot", line_color="gray", row=2, col=1, secondary_y=True)
 
     # 🎚️ TOGGLE: Fila 3 SMI
@@ -160,8 +177,9 @@ def construir_grafico_tecnico(hist, ha_df, ema_200, temporalidad, tipo_mercado, 
         fig.add_hline(y=40, line_dash="dash", line_color="red", row=3, col=1, opacity=0.5)
         fig.add_hline(y=-40, line_dash="dash", line_color="green", row=3, col=1, opacity=0.5)
 
-    # 🗺️ Ciclo Halving: líneas verticales solo en semanal + cripto
-    mostrar_ciclo = temporalidad == "Semanal" and "Cripto" in tipo_mercado
+    # 🗺️ Ciclo Halving: líneas verticales solo en semanal + cripto, y solo si
+    # el usuario deja el toggle encendido (pueden ensuciar el análisis).
+    mostrar_ciclo = show_halving and temporalidad == "Semanal" and "Cripto" in tipo_mercado
     if mostrar_ciclo:
         _dibujar_ciclo_halving(fig)
 
@@ -175,8 +193,8 @@ def construir_grafico_tecnico(hist, ha_df, ema_200, temporalidad, tipo_mercado, 
         fecha_inicio, fecha_fin = hist.index[max(0, len(hist)-100)], hist.index[-1] + pd.Timedelta(days=5) # Zoom inteligente automático
     
     fig.update_layout(
-        template="plotly_dark", paper_bgcolor="#131722", plot_bgcolor="#131722", 
-        xaxis_rangeslider_visible=False, height=800 if show_smi else 650, margin=dict(l=10, r=10, t=30, b=10), 
+        template=tema_template, paper_bgcolor=color_fondo, plot_bgcolor=color_fondo,
+        xaxis_rangeslider_visible=False, height=800 if show_smi else 650, margin=dict(l=10, r=10, t=30, b=10),
         showlegend=False, dragmode='pan', modebar_add=['drawline', 'drawrect', 'eraseshape']
     )
    # Limpiar líneas de fondo blancas en TODOS los sub-gráficos
