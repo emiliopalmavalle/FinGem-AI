@@ -1054,12 +1054,13 @@ def _procesar_calls_baratos_ticker(args: tuple) -> list[dict]:
     """Escanea un ticker y devuelve los CALLs que caben en el presupuesto.
 
     Args:
-        args: (ticker, presupuesto_max, dte_min, dte_max, oi_min).
+        args: (ticker, presupuesto_max, dte_min, dte_max, oi_min, spread_max),
+            donde spread_max es el spread bid/ask máximo permitido en %.
 
     Returns:
         Lista de dicts, uno por contrato viable (puede ser vacía).
     """
-    ticker, presupuesto, dte_min, dte_max, oi_min = args
+    ticker, presupuesto, dte_min, dte_max, oi_min, spread_max = args
     contratos = []
     try:
         t = yf.Ticker(ticker)
@@ -1069,6 +1070,17 @@ def _procesar_calls_baratos_ticker(args: tuple) -> list[dict]:
         spot = getattr(t.fast_info, "last_price", None) or 0.0
         if not spot:
             return []
+
+        # Fecha del próximo reporte de resultados (para marcar riesgo de IV crush).
+        # Una sola lectura por ticker; si falla, no bloquea el escaneo.
+        fecha_earnings = None
+        try:
+            cal = t.calendar
+            fechas_e = (cal or {}).get("Earnings Date", []) if isinstance(cal, dict) else []
+            if fechas_e:
+                fecha_earnings = pd.Timestamp(fechas_e[0]).to_pydatetime().replace(tzinfo=None)
+        except Exception:
+            fecha_earnings = None
 
         hoy = datetime.now()
         fechas_ok = [
@@ -1100,7 +1112,7 @@ def _procesar_calls_baratos_ticker(args: tuple) -> list[dict]:
             c = c[
                 (c["costo"] <= presupuesto) &
                 (c["openInterest"] >= oi_min) &
-                (c["spread_pct"] <= 35)
+                (c["spread_pct"] <= spread_max)
             ]
 
             for _, fila in c.iterrows():
@@ -1112,6 +1124,13 @@ def _procesar_calls_baratos_ticker(args: tuple) -> list[dict]:
                 breakeven = fila["strike"] + fila["ask"]
                 pct_be    = (breakeven / spot - 1) * 100
 
+                # Riesgo de earnings: el contrato cruza el reporte si la fecha
+                # de resultados es futura Y cae en/antes del vencimiento.
+                # El guardia `hoy <=` evita falsos positivos cuando Yahoo
+                # devuelve una fecha de earnings ya pasada (aún sin actualizar).
+                venc_dt = datetime.strptime(fecha, "%Y-%m-%d")
+                cruza_earnings = bool(fecha_earnings and hoy <= fecha_earnings <= venc_dt)
+
                 # ── Score de viabilidad 0-100
                 s_delta  = max(0, 100 - abs(delta - 0.40) * 250)       # sweet spot ~0.40
                 sp       = fila["spread_pct"]
@@ -1119,9 +1138,15 @@ def _procesar_calls_baratos_ticker(args: tuple) -> list[dict]:
                 oi       = fila["openInterest"]
                 s_oi     = 90 if oi >= 1000 else 70 if oi >= 300 else 50 if oi >= 100 else 30
                 s_be     = 90 if pct_be <= 3 else 70 if pct_be <= 6 else 45 if pct_be <= 10 else 20
-                score    = int(s_delta * 0.30 + s_spread * 0.20 + s_oi * 0.20 + s_be * 0.30)
+                # IV absoluta como proxy de "caro/barato en volatilidad":
+                # sin IV Rank por ticker aquí, se usa un umbral absoluto simple.
+                iv_p     = iv * 100
+                s_iv     = 90 if iv_p <= 40 else 65 if iv_p <= 60 else 40 if iv_p <= 90 else 20
+                score    = int(s_delta * 0.25 + s_spread * 0.15 + s_oi * 0.15
+                               + s_be * 0.25 + s_iv * 0.20)
 
                 contratos.append({
+                    "cruza_earnings": cruza_earnings,
                     "ticker":     ticker,
                     "spot":       spot,
                     "vencimiento": fecha,
@@ -1150,17 +1175,20 @@ def escanear_calls_baratos(
     dte_max: int = 60,
     oi_min: int = 50,
     top_n: int = 25,
+    spread_max: float = 25.0,
 ) -> pd.DataFrame:
     """Busca CALLs concretos operables con capital pequeño.
 
     Filtros de viabilidad (no solo baratura):
       - Costo total del contrato (ask × 100) dentro del presupuesto
-      - Bid y Ask válidos con spread <= 35% (que se pueda entrar Y salir)
+      - Bid y Ask válidos con spread <= spread_max (configurable, default 25%)
       - Open Interest mínimo (que haya mercado real)
       - Delta >= 0.10 (descarta loterías sin probabilidad)
 
-    Score 0-100 pondera: cercanía a delta 0.40 (30%), % de movimiento
-    necesario para breakeven (30%), spread (20%) y Open Interest (20%).
+    Score 0-100 pondera: cercanía a delta 0.40 (25%), % de movimiento
+    necesario para breakeven (25%), nivel de IV (20%), spread (15%) y
+    Open Interest (15%). Además marca los contratos que cruzan el próximo
+    reporte de resultados (riesgo de IV crush).
 
     Args:
         lista_tickers: universo a escanear.
@@ -1168,11 +1196,12 @@ def escanear_calls_baratos(
         dte_min/dte_max: ventana de días al vencimiento.
         oi_min: Open Interest mínimo por contrato.
         top_n: máximo de filas a devolver.
+        spread_max: spread bid/ask máximo permitido en % (default 25).
 
     Returns:
         DataFrame ordenado por score con columnas listas para la UI.
     """
-    args = [(sym, presupuesto_max, dte_min, dte_max, oi_min) for sym in lista_tickers]
+    args = [(sym, presupuesto_max, dte_min, dte_max, oi_min, spread_max) for sym in lista_tickers]
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         resultados = list(ex.map(_procesar_calls_baratos_ticker, args))
 
@@ -1180,7 +1209,11 @@ def escanear_calls_baratos(
     if not todos:
         return pd.DataFrame()
 
-    df = pd.DataFrame(todos).sort_values("score", ascending=False).head(top_n)
+    # Máx 3 contratos por ticker: diversifica la tabla en vez de concentrarla
+    # en 1-2 símbolos muy líquidos.
+    df = pd.DataFrame(todos).sort_values("score", ascending=False)
+    df = df.groupby("ticker", group_keys=False).head(3)
+    df = df.head(top_n)
 
     return pd.DataFrame({
         "Ticker":       df["ticker"],
@@ -1197,4 +1230,5 @@ def escanear_calls_baratos(
         "Volumen":      df["volumen"].map("{:,}".format),
         "Spread":       df["spread_pct"].map("{:.0f}%".format),
         "IV":           df["iv_pct"].map("{:.0f}%".format),
+        "⚠️ Earnings":  df["cruza_earnings"].map(lambda x: "Sí ⚡ IV crush" if x else "—"),
     }).reset_index(drop=True)

@@ -1405,8 +1405,10 @@ if tipo_mercado == "💸 CALLs Baratos (Capital Pequeño)":
     st.header("💸 Buscador de CALLs Baratos")
     st.caption(
         "Contratos CALL concretos que caben en tu presupuesto y son **operables de verdad**: "
-        "bid/ask activos, spread ≤ 35%, Open Interest real y delta ≥ 0.10 (sin loterías). "
-        "Datos de Yahoo Finance (~15 min de retraso) — la misma cadena de opciones que muestra Webull."
+        "bid/ask activos, spread configurable, Open Interest real y delta ≥ 0.10 (sin loterías). "
+        "Datos de Yahoo Finance (~15 min de retraso) — la misma cadena de opciones que muestra Webull.\n\n"
+        "⚠️ **Earnings = 'Sí'** significa que el contrato vence DESPUÉS del próximo reporte: "
+        "la prima puede desplomarse por IV crush aunque el precio suba. Trátalo como riesgo, no como oportunidad."
     )
 
     # ── Sidebar: configuración
@@ -1426,6 +1428,12 @@ if tipo_mercado == "💸 CALLs Baratos (Capital Pequeño)":
     oi_minimo = st.sidebar.select_slider(
         "🌊 Open Interest mínimo:", options=[25, 50, 100, 300, 500], value=50,
         help="Contratos abiertos: más OI = más fácil entrar y salir a buen precio.",
+    )
+    spread_max = st.sidebar.slider(
+        "📉 Spread bid/ask máximo (%):",
+        min_value=10, max_value=40, value=25, step=5,
+        help="Diferencia entre compra y venta. Menor = menos fuga al entrar y salir. "
+             "Para capital pequeño, 25% o menos es lo sano.",
     )
 
     # Preselección + campo de lista manual SIEMPRE visible (mismo patrón que
@@ -1453,6 +1461,7 @@ if tipo_mercado == "💸 CALLs Baratos (Capital Pequeño)":
                 dte_min=dte_rango[0],
                 dte_max=dte_rango[1],
                 oi_min=oi_minimo,
+                spread_max=spread_max,
             )
 
         if df_baratos.empty:
