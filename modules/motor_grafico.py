@@ -154,7 +154,7 @@ def construir_grafico_tecnico(hist, ha_df, ema_200, temporalidad, tipo_mercado, 
 
     # 🎚️ TOGGLE: EMAs
     if show_emas:
-        fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_10'], mode='lines', line=dict(color='#2962FF', width=1.5), name='EMA 10'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_10'], mode='lines', line=dict(color='#2962FF', width=2), name='EMA 10'), row=1, col=1)
         fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_55'], mode='lines', line=dict(color='#FF6D00', width=2), name='EMA 55'), row=1, col=1)
         if ema_200 > 0: fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_200'], mode='lines', line=dict(color=color_linea, width=2), name='EMA 200'), row=1, col=1)
 
