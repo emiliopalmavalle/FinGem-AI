@@ -14,23 +14,111 @@ _COLORES_CICLO = {"halving": "#FF9800", "start": "#089981", "end": "#F23645", "d
 def _dibujar_ciclo_halving(fig):
     """Dibuja las líneas verticales del ciclo halving en la fila de precio.
 
-    Usa timestamps en milisegundos: add_vline con datetime directo
-    tiene inconsistencias conocidas en ejes de velas de Plotly.
+    Usa add_shape (no add_vline): en Plotly 6.x add_vline es un no-op sobre
+    figuras make_subplots. La línea va de y0=0 a y1=1 en 'y domain' (todo el
+    alto de la fila de precio); la fecha ISO se ubica en el eje x de tiempo.
     """
     for ciclo in CICLOS_HALVING:
         for evento, fecha in ciclo.items():
-            x_ms = pd.to_datetime(fecha).timestamp() * 1000
-            fig.add_vline(
-                x=x_ms, line_width=2, opacity=0.7,
-                line_dash="dot" if evento == "halving" else "solid",
-                line_color=_COLORES_CICLO[evento],
-                row=1, col=1,
+            fig.add_shape(
+                type="line", x0=fecha, x1=fecha, xref="x",
+                y0=0, y1=1, yref="y domain",
+                line=dict(
+                    color=_COLORES_CICLO[evento], width=2,
+                    dash="dot" if evento == "halving" else "solid",
+                ),
+                opacity=0.7, row=1, col=1,
             )
+
+
+def _calcular_niveles_sr(hist, lookback=6, tol_pct=0.010, max_por_lado=3, ventana=120):
+    """Soportes y Resistencias estilo LuxAlgo: pivotes swing confirmados.
+
+    Un pivote de resistencia es una vela cuyo High es el máximo de la ventana
+    [i-lookback, i+lookback]; uno de soporte, cuyo Low es el mínimo. Se agrupan
+    niveles cercanos (dentro de tol_pct) y se cuentan los toques: más toques =
+    nivel más respetado. Devuelve los más cercanos al precio actual (hasta
+    max_por_lado por lado).
+
+    Solo mira las últimas `ventana` velas: los niveles quedan relevantes a lo
+    que se ve en pantalla (el gráfico hace zoom a las ~100 más recientes), no
+    a mínimos históricos lejanos que ya no operan.
+    """
+    if len(hist) > ventana:
+        hist = hist.iloc[-ventana:]
+
+    highs = hist['High'].values
+    lows  = hist['Low'].values
+    n = len(highs)
+    if n < 2 * lookback + 1:
+        return {'soportes': [], 'resistencias': []}
+
+    crudos = []
+    for i in range(lookback, n - lookback):
+        if highs[i] == highs[i - lookback:i + lookback + 1].max():
+            crudos.append(highs[i])
+        if lows[i] == lows[i - lookback:i + lookback + 1].min():
+            crudos.append(lows[i])
+
+    if not crudos:
+        return {'soportes': [], 'resistencias': []}
+
+    # Agrupar niveles cercanos (clustering simple) y contar toques
+    crudos.sort()
+    grupos, actual = [], [crudos[0]]
+    for nivel in crudos[1:]:
+        if abs(nivel - actual[-1]) <= actual[-1] * tol_pct:
+            actual.append(nivel)
+        else:
+            grupos.append(actual)
+            actual = [nivel]
+    grupos.append(actual)
+
+    niveles = [(sum(g) / len(g), len(g)) for g in grupos]
+
+    precio = hist['Close'].iloc[-1]
+    resistencias = sorted([x for x in niveles if x[0] > precio], key=lambda x: x[0])[:max_por_lado]
+    soportes     = sorted([x for x in niveles if x[0] <= precio], key=lambda x: -x[0])[:max_por_lado]
+    return {'soportes': soportes, 'resistencias': resistencias}
+
+
+def _dibujar_soportes_resistencias(fig, hist):
+    """Dibuja las líneas horizontales de S/R en la fila de precio.
+
+    Rojo = resistencia (sobre el precio), verde = soporte (bajo el precio).
+    La opacidad crece con el número de toques: nivel más tocado = más visible.
+
+    Usa add_shape/add_annotation (no add_hline): en Plotly 6.x add_hline es
+    un no-op sobre figuras make_subplots, no dibuja nada.
+    """
+    niveles = _calcular_niveles_sr(hist)
+
+    def _nivel(precio, toques, color, etiqueta, yanchor):
+        opacidad = min(0.35 + toques * 0.15, 0.95)
+        fig.add_shape(
+            type="line", x0=0, x1=1, xref="x domain",
+            y0=precio, y1=precio, yref="y",
+            line=dict(color=color, width=1.3), opacity=opacidad,
+            row=1, col=1,
+        )
+        fig.add_annotation(
+            x=1, y=precio, xref="x domain", yref="y",
+            text=f"{etiqueta} {precio:,.2f} ({toques})",
+            showarrow=False, xanchor="right", yanchor=yanchor,
+            font=dict(color=color, size=10),
+            bgcolor="rgba(19,23,34,0.65)",
+            row=1, col=1,
+        )
+
+    for precio, toques in niveles['resistencias']:
+        _nivel(precio, toques, "#F23645", "R", "bottom")
+    for precio, toques in niveles['soportes']:
+        _nivel(precio, toques, "#089981", "S", "top")
 
 
 def construir_grafico_tecnico(hist, ha_df, ema_200, temporalidad, tipo_mercado, toggles):
     show_emas = toggles.get("EMAs", True)
-    show_utbot = toggles.get("UT_Bot", False)
+    show_sr = toggles.get("SR", False)
     show_smi = toggles.get("SMI", False)
 
     # Si SMI está activo, necesitamos 3 filas en lugar de 2
@@ -53,24 +141,9 @@ def construir_grafico_tecnico(hist, ha_df, ema_200, temporalidad, tipo_mercado, 
         fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_55'], mode='lines', line=dict(color='#FF6D00', width=2), name='EMA 55'), row=1, col=1)
         if ema_200 > 0: fig.add_trace(go.Scatter(x=hist.index, y=hist['EMA_200'], mode='lines', line=dict(color='white', width=2), name='EMA 200'), row=1, col=1)
 
-   # 🎚️ TOGGLE: UT Bot Alerts (Señales de Compra/Venta)
-    if show_utbot:
-        buys = hist[hist['Buy_Signal'] == True]
-        sells = hist[hist['Sell_Signal'] == True]
-        
-        # Etiquetas BUY verdes
-        fig.add_trace(go.Scatter(
-            x=buys.index, y=buys['Low'] * 0.95, mode='markers+text', 
-            marker=dict(symbol='triangle-up', color='#00FF00', size=14), 
-            text="BUY", textposition="bottom center", textfont=dict(color="#00FF00", size=11, weight="bold"), name='BUY'
-        ), row=1, col=1)
-        
-        # Etiquetas SELL rojas
-        fig.add_trace(go.Scatter(
-            x=sells.index, y=sells['High'] * 1.05, mode='markers+text', 
-            marker=dict(symbol='triangle-down', color='#FF0000', size=14), 
-            text="SELL", textposition="top center", textfont=dict(color="#FF0000", size=11, weight="bold"), name='SELL'
-        ), row=1, col=1)
+    # 🎚️ TOGGLE: Soportes y Resistencias (pivotes swing estilo LuxAlgo)
+    if show_sr:
+        _dibujar_soportes_resistencias(fig, hist)
 
     # Fila 2: Monitor y ADX (Base)
     colores_monitor = ['#089981' if (val >= 0 and val > hist['Monitor'].iloc[i-1]) else '#006400' if val >= 0 else '#F23645' if (val < 0 and val < hist['Monitor'].iloc[i-1]) else '#8B0000' for i, val in enumerate(hist['Monitor'])]

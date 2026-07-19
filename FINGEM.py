@@ -753,9 +753,9 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
         st.write("🎛️ **Capas de Trading (On/Off)**")
         t_col1, t_col2, t_col3 = st.columns(3)
         toggles = {
-            "EMAs":   t_col1.toggle("🧠 EMAs Institucionales", value=True),
-            "UT_Bot": t_col2.toggle("🤖 Smart PM Bot (ADX Filter)", value=False),
-            "SMI":    t_col3.toggle("🌊 Oscilador SMI", value=False),
+            "EMAs": t_col1.toggle("🧠 EMAs Institucionales", value=True),
+            "SR":   t_col2.toggle("📏 Soportes y Resistencias", value=False),
+            "SMI":  t_col3.toggle("🌊 Oscilador SMI", value=False),
         }
 
         # --- Gráfico Plotly ---
