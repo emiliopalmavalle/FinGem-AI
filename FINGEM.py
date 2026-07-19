@@ -616,7 +616,19 @@ elif tipo_mercado == "🌐 Escáner Global (Value/Momentum)":
                     "**vs SMA200**: ✅ sobre la media de 200 días (estabilizada) · ⚠️ debajo (aún en caída)."
                 )
             else:
-                st.warning("No se encontraron acciones con descuento significativo y fundamentales sanos.")
+                # El motor de Valor es solo-acciones (los ETFs no tienen P/E ni
+                # EPS), así que un universo de ETFs SIEMPRE saldrá vacío aquí:
+                # no es un fallo. Si detectamos ETFs, redirigimos a Momentum ETFs.
+                es_universo_etf = ("ETF" in seleccion_universo) or (
+                    df_mom_acc.empty and not df_mom_etf.empty
+                )
+                if es_universo_etf:
+                    st.info(
+                        "💡 Este universo son **ETFs** — el análisis de Valor (P/E, EPS) solo "
+                        "aplica a acciones individuales. Revisa la sección **🧺 Momentum ETFs** abajo."
+                    )
+                else:
+                    st.warning("No se encontraron acciones con descuento significativo y fundamentales sanos.")
 
             col1, col2 = st.columns(2)
             with col1:
