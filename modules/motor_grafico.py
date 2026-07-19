@@ -168,14 +168,20 @@ def construir_grafico_tecnico(hist, ha_df, ema_200, temporalidad, tipo_mercado, 
     
     fig.add_trace(go.Bar(x=hist.index, y=hist['Monitor'], marker_color=colores_monitor, name='Monitor', opacity=0.8), row=2, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(x=hist.index, y=hist['ADX'], mode='lines', line=dict(color=color_linea, width=1.5), name='ADX'), row=2, col=1, secondary_y=True)
-    fig.add_hline(y=23, line_dash="dot", line_color="gray", row=2, col=1, secondary_y=True)
+    # Umbral de tendencia ADX=23. add_shape (no add_hline, que es no-op en subplots).
+    fig.add_shape(type="line", x0=0, x1=1, xref="x domain", y0=23, y1=23,
+                  line=dict(color="gray", dash="dot", width=1),
+                  row=2, col=1, secondary_y=True)
 
     # 🎚️ TOGGLE: Fila 3 SMI
     if show_smi:
         fig.add_trace(go.Scatter(x=hist.index, y=hist['SMI'], mode='lines', line=dict(color='#2962FF', width=2), name='SMI'), row=3, col=1)
         fig.add_trace(go.Scatter(x=hist.index, y=hist['SMI_Signal'], mode='lines', line=dict(color='#F23645', width=1.5), name='SMI Signal'), row=3, col=1)
-        fig.add_hline(y=40, line_dash="dash", line_color="red", row=3, col=1, opacity=0.5)
-        fig.add_hline(y=-40, line_dash="dash", line_color="green", row=3, col=1, opacity=0.5)
+        # Zonas de sobrecompra/sobreventa SMI (±40). add_shape por el no-op de add_hline.
+        fig.add_shape(type="line", x0=0, x1=1, xref="x domain", y0=40, y1=40,
+                      line=dict(color="red", dash="dash", width=1), opacity=0.5, row=3, col=1)
+        fig.add_shape(type="line", x0=0, x1=1, xref="x domain", y0=-40, y1=-40,
+                      line=dict(color="green", dash="dash", width=1), opacity=0.5, row=3, col=1)
 
     # 🗺️ Ciclo Halving: líneas verticales solo en semanal + cripto, y solo si
     # el usuario deja el toggle encendido (pueden ensuciar el análisis).
