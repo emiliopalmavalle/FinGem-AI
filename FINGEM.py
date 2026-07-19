@@ -1340,7 +1340,6 @@ UNIVERSOS_BARATOS = {
         "SPY", "QQQ", "AAPL", "AMD", "INTC", "PLTR", "COIN",
         "TSLA", "NVDA", "IBIT", "GLD", "XLF", "EEM",
     ],
-    "✍️ Lista personalizada": [],
 }
 
 if tipo_mercado == "💸 CALLs Baratos (Capital Pequeño)":
@@ -1370,12 +1369,17 @@ if tipo_mercado == "💸 CALLs Baratos (Capital Pequeño)":
         help="Contratos abiertos: más OI = más fácil entrar y salir a buen precio.",
     )
 
+    # Preselección + campo de lista manual SIEMPRE visible (mismo patrón que
+    # derivados): no hace falta abrir/scrollear el desplegable para escribir
+    # tu propia lista, y el dropdown queda corto y no se corta al fondo.
     universo_b = st.sidebar.selectbox("Universo:", list(UNIVERSOS_BARATOS.keys()))
-    if universo_b == "✍️ Lista personalizada":
-        tickers_b_raw = st.sidebar.text_area(
-            "Tickers (separados por coma):", value="F, NIO, SOFI, AAL, SNAP", height=90,
-        )
-        lista_baratos = [t.strip().upper() for t in tickers_b_raw.split(",") if t.strip()]
+    lista_manual_raw = st.sidebar.text_input(
+        "…o escribe tu propia lista (coma):",
+        "",
+        help="Déjalo vacío para usar el universo de arriba. Ej: F, NIO, SOFI, SNAP",
+    ).strip()
+    if lista_manual_raw:
+        lista_baratos = [t.strip().upper() for t in lista_manual_raw.split(",") if t.strip()]
     else:
         lista_baratos = UNIVERSOS_BARATOS[universo_b]
 
