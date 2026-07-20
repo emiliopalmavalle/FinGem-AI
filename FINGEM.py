@@ -431,7 +431,8 @@ tipo_mercado = st.sidebar.radio(
         "🧱 Flujo de Opciones (Derivados)",
         "🎯 Radar de Opciones (Score Quant)",
         "💸 CALLs Baratos (Capital Pequeño)",
-    ]
+    ],
+    index=1,  # Arranca en Criptomonedas → BTC-USD (símbolo default al iniciar)
 )
 
 # ==========================================
