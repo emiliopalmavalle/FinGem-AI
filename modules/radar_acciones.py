@@ -33,6 +33,74 @@ UMBRAL_PE_MAX         = 30.0
 UMBRAL_CAMBIO_SEMANAL = 1.0     # % mínimo de subida semanal
 UMBRAL_RVOL           = 1.2     # Volumen relativo mínimo
 
+# ==========================================
+# 🏢 PERFIL DE EMPRESA (ES) — para discriminar de un vistazo
+# ==========================================
+# Traducción por mapa (offline, sin red): los 11 sectores GICS y los
+# países más comunes. Sector/país son conjuntos cerrados; la industria
+# (texto libre) se traduce aparte con red, una sola vez por valor único.
+SECTORES_ES = {
+    "Technology":             "Tecnología",
+    "Financial Services":     "Servicios Financieros",
+    "Healthcare":             "Salud",
+    "Consumer Cyclical":      "Consumo Discrecional",
+    "Consumer Defensive":     "Consumo Básico",
+    "Communication Services": "Comunicaciones",
+    "Industrials":            "Industrial",
+    "Energy":                 "Energía",
+    "Basic Materials":        "Materiales",
+    "Real Estate":            "Bienes Raíces",
+    "Utilities":              "Servicios Públicos",
+}
+
+PAISES_ES = {
+    "United States":  "🇺🇸 EEUU",       "Mexico":        "🇲🇽 México",
+    "China":          "🇨🇳 China",       "Canada":        "🇨🇦 Canadá",
+    "United Kingdom": "🇬🇧 R. Unido",    "Germany":       "🇩🇪 Alemania",
+    "Japan":          "🇯🇵 Japón",       "France":        "🇫🇷 Francia",
+    "Switzerland":    "🇨🇭 Suiza",       "Netherlands":   "🇳🇱 P. Bajos",
+    "Ireland":        "🇮🇪 Irlanda",     "Brazil":        "🇧🇷 Brasil",
+    "India":          "🇮🇳 India",       "South Korea":   "🇰🇷 Corea del Sur",
+    "Taiwan":         "🇹🇼 Taiwán",      "Israel":        "🇮🇱 Israel",
+    "Spain":          "🇪🇸 España",      "Argentina":     "🇦🇷 Argentina",
+    "Australia":      "🇦🇺 Australia",   "Bermuda":       "🇧🇲 Bermudas",
+    "Cayman Islands": "🇰🇾 Is. Caimán",  "Singapore":     "🇸🇬 Singapur",
+    "Hong Kong":      "🇭🇰 Hong Kong",   "Italy":         "🇮🇹 Italia",
+}
+
+_cache_industria_es: dict[str, str] = {}
+
+
+def _traducir_industria(industria: Optional[str]) -> str:
+    """Traduce la industria (texto libre de Yahoo) al español, cacheada.
+
+    Se llama en un único hilo desde el constructor de DataFrames (no en
+    el escaneo paralelo), así que las llamadas de red son pocas y no se
+    solapan. Si la traducción falla, devuelve el original en inglés.
+    """
+    if not industria:
+        return ""
+    if industria in _cache_industria_es:
+        return _cache_industria_es[industria]
+    traducida = industria
+    try:
+        from deep_translator import GoogleTranslator
+        traducida = GoogleTranslator(source="en", target="es").translate(industria) or industria
+    except Exception:
+        traducida = industria
+    _cache_industria_es[industria] = traducida
+    return traducida
+
+
+def _perfil_breve(sector: Optional[str], industria: Optional[str], pais: Optional[str]) -> str:
+    """Compone un perfil compacto: 'Sector · Industria · 🇺🇸 País'."""
+    partes = [
+        SECTORES_ES.get(sector, sector) if sector else None,
+        _traducir_industria(industria) or None,
+        PAISES_ES.get(pais, pais) if pais else None,
+    ]
+    return " · ".join(p for p in partes if p) or "N/A"
+
 
 def _obtener_info_fundamental(empresa: yf.Ticker) -> dict:
     """Obtiene datos base usando fast_info (llamada HTTP ligera).
@@ -87,10 +155,15 @@ def _obtener_fundamentales_completos(empresa: yf.Ticker) -> dict:
             'ps_ratio':     info.get('priceToSalesTrailing12Months'),
             'roe':          info.get('returnOnEquity'),
             'deuda_ebitda': (deuda / ebitda) if (deuda and ebitda and ebitda > 0) else None,
+            # Identidad de la empresa (perfil breve para discriminar de un vistazo)
+            'sector':       info.get('sector'),
+            'industria':    info.get('industry'),
+            'pais':         info.get('country'),
         }
     except Exception:
         return {'pe_ratio': 0, 'eps': 0, 'nombre': None,
-                'ps_ratio': None, 'roe': None, 'deuda_ebitda': None}
+                'ps_ratio': None, 'roe': None, 'deuda_ebitda': None,
+                'sector': None, 'industria': None, 'pais': None}
 
 
 def procesar_un_ticker(ticker: str) -> Optional[dict]:
@@ -165,6 +238,9 @@ def procesar_un_ticker(ticker: str) -> Optional[dict]:
         ps_r     = fundamentales.get('ps_ratio')
         roe_r    = fundamentales.get('roe')
         de_r     = fundamentales.get('deuda_ebitda')
+        sector_r = fundamentales.get('sector')
+        indus_r  = fundamentales.get('industria')
+        pais_r   = fundamentales.get('pais')
 
         resultado = {
             "ticker": ticker,
@@ -194,6 +270,9 @@ def procesar_un_ticker(ticker: str) -> Optional[dict]:
             resultado["value"] = {
                 "Ticker":    ticker,
                 "Nombre":    nombre,
+                "_sector":   sector_r,
+                "_industria": indus_r,
+                "_pais":     pais_r,
                 "Precio":    f"{moneda} {precio_actual:,.2f}",
                 "Score_Raw": score,
                 "Score":     int(score),
@@ -211,6 +290,9 @@ def procesar_un_ticker(ticker: str) -> Optional[dict]:
             resultado["momentum"] = {
                 "Ticker":        ticker,
                 "Nombre":        nombre,
+                "_sector":       sector_r,
+                "_industria":    indus_r,
+                "_pais":         pais_r,
                 "Fuerza_Raw":    cambio_semanal,
                 "Subida Semanal": f"+{cambio_semanal:.2f}% 🚀",
                 "RVOL":          f"{rvol:.1f}x Vol 🐋",
@@ -367,7 +449,12 @@ def escaneo_institucional_dual(
         # no por caída pura: más caída no siempre es mejor oportunidad
         df = pd.DataFrame(datos).sort_values("Score_Raw", ascending=False).head(10)
         df['Descuento'] = df['Caida_Raw'].apply(lambda x: f"{x:.2f}% 🩸")
-        columnas = ['Ticker', 'Nombre', 'Precio', 'Score', 'Descuento',
+        # Perfil breve (Sector · Industria · País) — se compone aquí, en un
+        # solo hilo y solo para el top 10, para no traducir en el escaneo paralelo
+        df['🏢 Perfil'] = df.apply(
+            lambda r: _perfil_breve(r.get('_sector'), r.get('_industria'), r.get('_pais')), axis=1
+        )
+        columnas = ['Ticker', 'Nombre', '🏢 Perfil', 'Precio', 'Score', 'Descuento',
                     'P/E', 'P/S', 'ROE', 'D/EBITDA', 'EPS', 'vs SMA200']
         return df[columnas]
 
@@ -375,7 +462,14 @@ def escaneo_institucional_dual(
         if not datos:
             return pd.DataFrame()
         df = pd.DataFrame(datos).sort_values("Fuerza_Raw", ascending=False).head(10)
-        return df.drop(columns=['Fuerza_Raw'])
+        df['🏢 Perfil'] = df.apply(
+            lambda r: _perfil_breve(r.get('_sector'), r.get('_industria'), r.get('_pais')), axis=1
+        )
+        columnas = ['Ticker', 'Nombre', '🏢 Perfil', 'Subida Semanal', 'RVOL', 'vs SMA200']
+        # Los ETFs no traen sector/industria: si toda la columna quedó 'N/A', se descarta
+        if (df['🏢 Perfil'] == 'N/A').all():
+            columnas.remove('🏢 Perfil')
+        return df[columnas]
 
     df_val      = _construir_df_value(angeles_caidos)
     df_mom_acc  = _construir_df_momentum(despegues_acciones)

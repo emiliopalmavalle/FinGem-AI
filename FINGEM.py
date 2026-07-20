@@ -942,13 +942,52 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
 
                 # ── 6. Consenso + fundamentales + earnings próximos (solo bolsa)
                 recomendacion_str = "N/A"
-                fund_ui = {}  # métricas para la fila visible (tabla del auditor)
+                fund_ui = {}       # métricas para la fila visible (tabla del auditor)
+                ficha_empresa = {} # identidad: nombre, sector, actividad, país
                 if "NY" in tipo_mercado or "MX" in tipo_mercado or "Individual" in tipo_mercado:
                     try:
                         # Una sola llamada .info para consenso Y fundamentales
                         tk_fund = yf.Ticker(simbolo)
                         info_ticker = tk_fund.info
                         recomendacion_str = info_ticker.get("recommendationKey", "N/A") or "N/A"
+
+                        # ── Ficha de identidad: nombre, sector, actividad y país.
+                        #    Sector/país por mapa ES (offline); la actividad
+                        #    (resumen de negocio) se traduce y se recorta breve.
+                        from modules.radar_acciones import SECTORES_ES, PAISES_ES
+                        nombre_emp = info_ticker.get("longName") or info_ticker.get("shortName") or simbolo
+                        sector_en  = info_ticker.get("sector")
+                        indus_en   = info_ticker.get("industry")
+                        pais_en    = info_ticker.get("country")
+                        resumen_en = info_ticker.get("longBusinessSummary") or ""
+                        # Actividad: 1-2 frases del resumen (o la industria si no hay resumen)
+                        actividad_en = ""
+                        if resumen_en:
+                            frases = resumen_en.replace("\n", " ").split(". ")
+                            actividad_en = ". ".join(frases[:2]).strip()
+                            if actividad_en and not actividad_en.endswith("."):
+                                actividad_en += "."
+                        try:
+                            _trad = GoogleTranslator(source="auto", target="es")
+                            indus_es     = _trad.translate(indus_en) if indus_en else ""
+                            actividad_es = _trad.translate(actividad_en) if actividad_en else ""
+                        except Exception:
+                            indus_es, actividad_es = (indus_en or ""), (actividad_en or "")
+                        ficha_empresa = {
+                            "nombre":    nombre_emp,
+                            "sector":    SECTORES_ES.get(sector_en, sector_en) if sector_en else "N/A",
+                            "industria": indus_es or (indus_en or "N/A"),
+                            "actividad": actividad_es or (actividad_en or ""),
+                            "pais":      PAISES_ES.get(pais_en, pais_en) if pais_en else "N/A",
+                        }
+                        # Perfil real al prompt: ancla el análisis a la empresa
+                        # correcta (sector, actividad y país) en vez de inferir del ticker
+                        datos_extra_str = (
+                            f"PERFIL DE LA EMPRESA — Nombre: {nombre_emp}; "
+                            f"Sector: {sector_en or 'N/A'}; Industria: {indus_en or 'N/A'}; "
+                            f"País: {pais_en or 'N/A'}. "
+                            f"A qué se dedica: {actividad_en or 'N/A'} "
+                        ) + datos_extra_str
 
                         # Fundamentales clave (auditoría P8 + tabla del auditor):
                         # valoración (P/E, P/S), eficiencia (ROE, margen) y
@@ -1022,6 +1061,18 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                 )
 
             st.success("Análisis completado:")
+
+            # ── 🏢 Ficha de la empresa: nombre, sector, actividad y país
+            #     (identidad de un vistazo, antes del análisis técnico)
+            if ficha_empresa:
+                st.markdown(f"#### 🏢 {ficha_empresa['nombre']}")
+                ie1, ie2, ie3 = st.columns(3)
+                ie1.metric("Sector",    ficha_empresa["sector"])
+                ie2.metric("Industria", ficha_empresa["industria"])
+                ie3.metric("País",      ficha_empresa["pais"])
+                if ficha_empresa.get("actividad"):
+                    st.caption(f"**A qué se dedica:** {ficha_empresa['actividad']}")
+
             mostrar_metricas_macro(ctx_macro_global)
 
             # ── 📊 Fila de fundamentales (tabla del auditor: valoración,
