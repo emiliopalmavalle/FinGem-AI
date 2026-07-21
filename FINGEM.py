@@ -18,7 +18,7 @@ from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_ra
 from modules.ai_client import configurar_ia, llamar_ia, mostrar_estado_ia_sidebar, proveedor_activo
 from modules.contexto_macro import obtener_contexto_macro_global, mostrar_metricas_macro
 from modules.auth import requerir_login, mostrar_usuario_sidebar
-from modules.validador_plan import extraer_plan, validar_plan
+from modules.validador_plan import extraer_plan, validar_plan, RB_MINIMO
 from modules.opciones_cboe import mostrar_salud_datos, mostrar_salud_datos_lista
 from modules.broker_alpaca import (
     configurar_broker, broker_activo, estado_cuenta, mercado_abierto,
@@ -98,6 +98,28 @@ def analizar_con_gemini(
         regla_stop = ("STOP LOSS: ancla el stop a la ESTRUCTURA (bajo el mínimo relevante o sobre el "
                       "máximo relevante); NO uses el múltiplo de ATR — en velas de esta temporalidad es demasiado amplio.")
 
+    # Disciplina de riesgo — aplica a bolsa y cripto por igual.
+    # Nace de observar que la IA entregaba planes con R/B por debajo de 1 y
+    # convicción declarada BAJA: el validador los rechazaba después, pero la
+    # IA seguía fabricándolos. Mejor enseñarle el estándar antes que corregir
+    # a posteriori. RB_MINIMO se importa del validador: una sola fuente de verdad.
+    bloque_disciplina = f"""
+        DISCIPLINA DE RIESGO — CONDICIONES PREVIAS AL PLAN (obligatorias):
+        - CALCULA el ratio R/B = (TP − entrada) / (entrada − stop) ANTES de proponer nada.
+          Si con niveles REALES de estructura no alcanza {RB_MINIMO}, la respuesta correcta es
+          "direccion": "fuera", y dilo explícitamente: "la estructura no ofrece un R/B aceptable".
+        - PROHIBIDO fabricar el ratio: no alejes el TP ni acerques el stop para que salga el número.
+          Los niveles los manda la estructura del precio, no la aritmética que te conviene.
+        - Si tu convicción es BAJA, o el sesgo es NEUTRAL sin catalizador claro, la recomendación
+          por defecto es "fuera". No tienes ninguna obligación de encontrar una operación:
+          quedarse fuera es una conclusión profesional legítima y FRECUENTE. Un reporte que
+          concluye "hoy aquí no hay nada" vale tanto como uno que encuentra un setup.
+        - NO propongas un LARGO mientras describes el contexto como bajista o lateral-bajista
+          (ni un CORTO en contexto alcista), salvo que justifiques un catalizador táctico concreto.
+        - Indica el % DE MOVIMIENTO que necesita el subyacente desde la entrada hasta el TP.
+          Es el dato que decide si una opción puede capturarlo o si el spread y el theta se lo comen.
+    """
+
     bloque_conclusion = f"""
         SECCIÓN FINAL OBLIGATORIA — cierra SIEMPRE el reporte con una sección
         titulada exactamente "🎯 Conclusión ({temporalidad})" que responda en 3-4 líneas:
@@ -153,6 +175,7 @@ def analizar_con_gemini(
         - Si TODOS los niveles de estructura quedan POR ENCIMA del precio actual (colapso reciente), el único
           anclaje válido de soporte es el Put Wall; si tampoco existe, declara "sin soporte estructural cercano" y sé conservador.
         - Si hay earnings dentro del horizonte operativo, adviértelo como riesgo de gap.
+        {bloque_disciplina}
         {bloque_conclusion}
         {bloque_json}
 
@@ -194,6 +217,7 @@ def analizar_con_gemini(
         2. 🐋 Análisis de Liquidez y On-Chain (ballenas, sentimiento retail, flujo institucional).
         3. 💡 Veredicto Institucional y Operativa ({horizonte_op}) — sesgo, entrada USD exacta anclada
            a estructura, Stop Loss y Take Profit. {regla_stop}
+        {bloque_disciplina}
         {bloque_conclusion}
         {bloque_json}
 
@@ -1135,7 +1159,14 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                                delta=f"sesgo mercado: {v.get('sesgo', 'n/a')}", delta_color="off")
                     pc2.metric("Entrada", f"USD {v['entrada']:,.2f}")
                     pc3.metric("Stop", f"USD {v['stop']:,.2f}")
-                    pc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" + (f" ({v['rb']})" if v.get('rb') else ""))
+                    # Marca visual del R/B: un 0.9 pasa desapercibido entre
+                    # números si no se señala que está bajo el mínimo sano
+                    rb_val = v.get("rb")
+                    if rb_val:
+                        rb_txt = f" · R/B {rb_val} " + ("⚠️" if rb_val < RB_MINIMO else "✅")
+                    else:
+                        rb_txt = ""
+                    pc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}{rb_txt}")
                 for aviso in v.get("avisos", []):
                     (st.warning if aviso.startswith("⚠️") else st.info if aviso.startswith("ℹ️") else st.success)(aviso)
 
