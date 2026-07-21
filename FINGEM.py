@@ -1667,9 +1667,34 @@ elif tipo_mercado == "💼 Paper Trading (Alpaca)":
 
     if not broker_activo():
         st.error(
-            "🔑 **Faltan las credenciales de Alpaca.** Añádelas a los *secrets* de Streamlit "
-            "como `ALPACA_API_KEY` y `ALPACA_SECRET_KEY`. "
-            "Usa las llaves de **paper trading** (empiezan con `PK`), nunca las de live."
+            "🔑 **Faltan las credenciales de Alpaca.** Deben ir en los *secrets* de Streamlit "
+            "como `ALPACA_API_KEY` y `ALPACA_SECRET_KEY`, con las llaves de **paper trading** "
+            "(empiezan con `PK`)."
+        )
+        # Diagnóstico: adivinar por qué no las ve cuesta más que mirarlo.
+        # Se muestran SOLO los nombres de las claves, nunca sus valores.
+        try:
+            claves = list(st.secrets.keys())
+        except Exception:
+            claves = []
+        st.markdown("**Qué está viendo la app en tus secrets ahora mismo:**")
+        if not claves:
+            st.write("· *(ninguna)* — el archivo de secrets está vacío o no se guardó.")
+        else:
+            for k in claves:
+                anidada = isinstance(st.secrets[k], dict)
+                marca = "📁 sección (contenido anidado)" if anidada else "🔑 clave suelta"
+                st.write(f"· `{k}` — {marca}")
+        st.info(
+            "**Las dos causas habituales:**\n\n"
+            "1. **Encabezado de sección.** Si escribiste algo como `[alpaca]` encima, las claves "
+            "quedan anidadas y la app no las encuentra. Deben ir **sueltas, sin ninguna leyenda "
+            "antepuesta**, igual que tus claves de Telegram o Gemini.\n"
+            "2. **Falta reiniciar.** Tras guardar los secrets, Streamlit Cloud a veces sigue con "
+            "los viejos: usa **Manage app → Reboot app**.\n\n"
+            "Formato correcto (cada una en su propia línea, al mismo nivel que las demás):\n\n"
+            "`ALPACA_API_KEY = \"PK...\"`\n\n"
+            "`ALPACA_SECRET_KEY = \"...\"`"
         )
         st.stop()
 
