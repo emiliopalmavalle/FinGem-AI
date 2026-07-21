@@ -19,6 +19,7 @@ from modules.ai_client import configurar_ia, llamar_ia, mostrar_estado_ia_sideba
 from modules.contexto_macro import obtener_contexto_macro_global, mostrar_metricas_macro
 from modules.auth import requerir_login, mostrar_usuario_sidebar
 from modules.validador_plan import extraer_plan, validar_plan
+from modules.opciones_cboe import mostrar_salud_datos, mostrar_salud_datos_lista
 from modules.motor_grafico import construir_grafico_tecnico
 from modules.procesador_datos import procesar_datos_tecnicos, descargar_historia
 
@@ -862,6 +863,10 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
 
                 # ── 1b. Niveles de opciones (solo bolsa con opciones listadas):
                 #        dónde están posicionados los market makers
+                # Marca si el prompt llegó a incluir niveles de opciones: solo
+                # entonces tiene sentido mostrar la salud de esa fuente (en BMV
+                # y cripto no hay opciones listadas y no es una anomalía)
+                opciones_usadas = False
                 if "Individual" in tipo_mercado:
                     try:
                         # Fuente CBOE: yfinance devuelve openInterest=0, bid/ask=0
@@ -870,6 +875,7 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                         from modules.opciones_cboe import cadena_cboe, vencimientos_disponibles
                         fechas_op = vencimientos_disponibles(simbolo)
                         if fechas_op:
+                            opciones_usadas = True
                             from modules.radar_derivados import (
                                 calcular_niveles_dia, encontrar_fecha_daytrading, encontrar_fecha_cercana,
                             )
@@ -1091,6 +1097,12 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                 fc[3].metric("Deuda/EBITDA",     fund_ui["Deuda/EBITDA"])
                 fc[4].metric("Free Cash Flow",   fund_ui["FCF"])
 
+            # ── 📡 Salud de la fuente de opciones: estos niveles (muros, Max
+            #     Pain, flujo) entraron al prompt, así que conviene ver de dónde
+            #     salieron y con qué cobertura
+            if opciones_usadas:
+                mostrar_salud_datos(simbolo)
+
             # ── Validación numérica del plan (auditoría P7):
             #    la IA redacta, la aritmética se verifica en Python
             plan, analisis_limpio = extraer_plan(analisis)
@@ -1143,6 +1155,8 @@ elif tipo_mercado == "🧱 Flujo de Opciones (Derivados)" and simbolo:
     if st.button(f"🕵️‍♂️ Extraer Flujo Institucional para {simbolo}", type="primary"):
         with st.spinner(f"Escaneando 4 horizontes temporales y procesando IA Quant..."):
             df_muros, reporte_ia, fig_visual, niveles_dia = escanear_flujo_institucional(simbolo)
+
+        mostrar_salud_datos(simbolo)
 
         # ── 🎯 Niveles operables del día (vencimiento 1-3d)
         if niveles_dia:
@@ -1310,6 +1324,7 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
             prog.progress(100, text="Análisis completado.")
 
         status_box.empty()
+        mostrar_salud_datos_lista(lista_radar)
 
         if df_quant.empty and df_swing.empty:
             st.warning("⚠️ No se obtuvieron datos de opciones. Verifica que los tickers tengan opciones listadas.")
@@ -1586,6 +1601,8 @@ if tipo_mercado == "💸 CALLs Baratos (Capital Pequeño)":
                 oi_min=oi_minimo,
                 spread_max=spread_max,
             )
+
+        mostrar_salud_datos_lista(lista_baratos)
 
         if df_baratos.empty:
             st.warning(

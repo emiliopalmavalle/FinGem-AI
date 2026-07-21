@@ -185,6 +185,101 @@ def descargar_cadena_cruda(simbolo: str) -> dict:
         return {}
 
 
+def salud_datos(simbolo: str) -> dict:
+    """Cobertura real de la cadena descargada — detector de degradación.
+
+    Los datos de opciones no fallan con un error: fallan devolviendo ceros
+    con apariencia de normalidad (fue justo lo que pasó con yfinance). Medir
+    la cobertura convierte esa avería silenciosa en algo visible.
+
+    No cuesta peticiones: recorre la cadena que ya está en caché.
+
+    Returns:
+        dict con fuente, nº de contratos, % con OI, % con greeks, % con IV
+        y 'nivel' ('ok' | 'degradado' | 'caido') para pintar la UI.
+    """
+    cruda = descargar_cadena_cruda(simbolo)
+    contratos = cruda.get("contratos", [])
+    n = len(contratos)
+
+    if n == 0:
+        return {"fuente": "CBOE", "contratos": 0, "pct_oi": 0.0,
+                "pct_greeks": 0.0, "pct_iv": 0.0, "nivel": "caido"}
+
+    con_oi = sum(1 for c in contratos if (c.get("open_interest") or 0) > 0)
+    con_gk = sum(1 for c in contratos if (c.get("delta") or 0) != 0)
+    con_iv = sum(1 for c in contratos if (c.get("iv") or 0) > 0)
+    pct_oi, pct_gk, pct_iv = con_oi / n * 100, con_gk / n * 100, con_iv / n * 100
+
+    # Umbrales calibrados sobre la cobertura medida en julio 2026
+    # (OI ~78%, greeks ~98%): el resto son contratos muertos sin precio
+    if pct_oi >= 50 and pct_gk >= 80:
+        nivel = "ok"
+    else:
+        nivel = "degradado"
+
+    return {"fuente": "CBOE", "contratos": n, "pct_oi": round(pct_oi, 1),
+            "pct_greeks": round(pct_gk, 1), "pct_iv": round(pct_iv, 1),
+            "nivel": nivel}
+
+
+def mostrar_salud_datos(simbolo: str) -> None:
+    """Pinta una línea discreta con el estado de la fuente de opciones.
+
+    Verde/gris = normal · amarillo = cobertura caída · rojo = sin datos.
+    """
+    s = salud_datos(simbolo)
+
+    if s["nivel"] == "caido":
+        st.error(
+            f"🔴 **Sin datos de opciones para {simbolo}.** O el activo no tiene opciones "
+            f"listadas (BMV, cripto), o la fuente CBOE dejó de responder. "
+            f"Los muros, Max Pain y greeks NO son fiables ahora mismo."
+        )
+    elif s["nivel"] == "degradado":
+        st.warning(
+            f"🟡 **Cobertura de datos baja en {simbolo}** — CBOE · {s['contratos']:,} contratos · "
+            f"OI {s['pct_oi']}% · greeks {s['pct_greeks']}% · IV {s['pct_iv']}%. "
+            f"Lo normal es OI ~78% y greeks ~98%: revisa antes de operar estos niveles."
+        )
+    else:
+        st.caption(
+            f"📡 Opciones: **CBOE** · {s['contratos']:,} contratos · "
+            f"OI {s['pct_oi']}% · greeks {s['pct_greeks']}% · IV {s['pct_iv']}% · retardo ~15 min"
+        )
+
+
+def mostrar_salud_datos_lista(simbolos: list[str]) -> None:
+    """Versión agregada para los módulos que escanean varios activos.
+
+    Una línea por ticker sería ruido; lo que importa aquí es distinguir
+    "este activo es ilíquido" (normal) de "la fuente se cayó" (todos en 0).
+    """
+    if not simbolos:
+        return
+    saludes = [salud_datos(s) for s in simbolos]
+    con_datos = [s for s in saludes if s["contratos"] > 0]
+
+    if not con_datos:
+        st.error(
+            f"🔴 **Ningún activo devolvió datos de opciones** ({len(simbolos)} consultados). "
+            f"Probablemente la fuente CBOE dejó de responder: los resultados de abajo "
+            f"NO son fiables."
+        )
+        return
+
+    pct_oi = sum(s["pct_oi"] for s in con_datos) / len(con_datos)
+    pct_gk = sum(s["pct_greeks"] for s in con_datos) / len(con_datos)
+    total  = sum(s["contratos"] for s in con_datos)
+    aviso  = "" if len(con_datos) == len(simbolos) else \
+             f" · ⚠️ {len(simbolos) - len(con_datos)} sin opciones listadas"
+
+    texto = (f"📡 Opciones: **CBOE** · {len(con_datos)}/{len(simbolos)} activos · "
+             f"{total:,} contratos · OI {pct_oi:.0f}% · greeks {pct_gk:.0f}% · "
+             f"retardo ~15 min{aviso}")
+    (st.warning if (pct_oi < 50 or pct_gk < 80) else st.caption)(texto)
+
+
 def _partes_occ(simbolo_occ: str) -> Optional[dict]:
     """Descompone un símbolo OCC en vencimiento, tipo y strike."""
     m = _PATRON_OCC.match(simbolo_occ or "")
