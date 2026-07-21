@@ -121,6 +121,11 @@ def calcular_max_pain(cadena) -> Optional[float]:
         strikes = sorted(set(calls['strike']).union(puts['strike']))
         if not strikes:
             return None
+        # Sin Open Interest el max pain no existe: todos los strikes pagarían
+        # 0 y ganaría el primero de la lista, devolviendo un número inventado
+        # con apariencia de real. Preferimos N/A a un dato falso.
+        if (calls['openInterest'].sum() + puts['openInterest'].sum()) <= 0:
+            return None
         mejor, menor_pago = None, float('inf')
         for s in strikes:
             pago_calls = ((s - calls['strike']).clip(lower=0) * calls['openInterest']).sum()
@@ -167,7 +172,14 @@ def calcular_niveles_dia(cadena, precio_spot: float) -> dict:
         frescos = []
         for tipo, df in [("CALL", calls), ("PUT", puts)]:
             zona = df[(df['strike'] >= precio_spot * 0.90) & (df['strike'] <= precio_spot * 1.10)]
-            inusual = zona[(zona['volume'] > zona['openInterest']) & (zona['volume'] >= 500)]
+            # El OI > 0 es obligatorio: si la fuente de datos lo entrega en 0
+            # (yfinance lo hace), "volumen > OI" sería siempre cierto y cada
+            # strike líquido se reportaría como posicionamiento nuevo
+            inusual = zona[
+                (zona['openInterest'] > 0)
+                & (zona['volume'] > zona['openInterest'])
+                & (zona['volume'] >= 500)
+            ]
             for _, fila in inusual.sort_values('volume', ascending=False).head(2).iterrows():
                 frescos.append(
                     f"{tipo} {fila['strike']:.0f} (vol {int(fila['volume']):,} vs OI {int(fila['openInterest']):,})"
