@@ -20,6 +20,11 @@ from modules.contexto_macro import obtener_contexto_macro_global, mostrar_metric
 from modules.auth import requerir_login, mostrar_usuario_sidebar
 from modules.validador_plan import extraer_plan, validar_plan
 from modules.opciones_cboe import mostrar_salud_datos, mostrar_salud_datos_lista
+from modules.broker_alpaca import (
+    configurar_broker, broker_activo, estado_cuenta, mercado_abierto,
+    posiciones_abiertas, ordenes, calcular_tamano,
+    enviar_orden_opcion, enviar_orden_accion, cancelar_orden, cerrar_posicion,
+)
 from modules.motor_grafico import construir_grafico_tecnico
 from modules.procesador_datos import procesar_datos_tecnicos, descargar_historia
 
@@ -34,6 +39,11 @@ TELEGRAM_GROUP_ID = st.secrets.get("TELEGRAM_GROUP_ID", "")
 GEMINI_API_KEY    = st.secrets.get("GEMINI_API_KEY", "")
 ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
 ETHERSCAN_API_KEY = st.secrets.get("ETHERSCAN_API_KEY", "")
+ALPACA_API_KEY    = st.secrets.get("ALPACA_API_KEY", "")
+ALPACA_SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", "")
+
+# Bróker de PAPEL (simulado): cierra el ciclo descubrir → discriminar → medir
+configurar_broker(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 
 # Cliente IA multi-proveedor: Claude principal → Gemini respaldo → reporte local
 configurar_ia(claude_api_key=ANTHROPIC_API_KEY, gemini_api_key=GEMINI_API_KEY)
@@ -432,6 +442,7 @@ tipo_mercado = st.sidebar.radio(
         "🧱 Flujo de Opciones (Derivados)",
         "🎯 Radar de Opciones (Score Quant)",
         "💸 CALLs Baratos (Capital Pequeño)",
+        "💼 Paper Trading (Alpaca)",
     ],
     index=1,  # Arranca en Criptomonedas → BTC-USD (símbolo default al iniciar)
 )
@@ -1635,4 +1646,183 @@ if tipo_mercado == "💸 CALLs Baratos (Capital Pequeño)":
                     "que se desploma tras el evento. Un call con IV altísima necesita un movimiento "
                     "enorme solo para no perder."
                 )
+
+
+# ==========================================
+# 💼 MÓDULO: PAPER TRADING (ALPACA)
+# ==========================================
+# Cierra el ciclo de la terminal: descubrir → discriminar → EJECUTAR Y MEDIR.
+# Sin registro de resultados no hay forma de distinguir un sistema que
+# funciona de una racha con suerte.
+#
+# ⚠️ Opera SIEMPRE contra la cuenta de PAPEL (simulada). La URL está fijada
+# en broker_alpaca.py y no es configurable: no puede tocar dinero real.
+# ==========================================
+elif tipo_mercado == "💼 Paper Trading (Alpaca)":
+    st.header("💼 Paper Trading — Cuenta Simulada")
+    st.caption(
+        "Ejecuta los planes de la terminal con dinero ficticio y mide el resultado real. "
+        "🔒 Conectado exclusivamente a la cuenta de **papel** de Alpaca."
+    )
+
+    if not broker_activo():
+        st.error(
+            "🔑 **Faltan las credenciales de Alpaca.** Añádelas a los *secrets* de Streamlit "
+            "como `ALPACA_API_KEY` y `ALPACA_SECRET_KEY`. "
+            "Usa las llaves de **paper trading** (empiezan con `PK`), nunca las de live."
+        )
+        st.stop()
+
+    cuenta = estado_cuenta()
+    if not cuenta.get("ok"):
+        st.error(f"No se pudo conectar con Alpaca: {cuenta.get('error')}")
+        st.stop()
+
+    # ── Estado del mercado: si está cerrado, las órdenes quedan en cola
+    reloj = mercado_abierto()
+    if reloj.get("abierto"):
+        st.success(f"🟢 Mercado ABIERTO · cierra {reloj.get('proximo_cierre', '')[:16].replace('T', ' ')}")
+    else:
+        st.info(
+            f"🔴 Mercado cerrado · abre {reloj.get('proxima_apertura', '')[:16].replace('T', ' ')}. "
+            f"Las órdenes que envíes quedarán en cola hasta la apertura."
+        )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Equity", f"USD {cuenta['equity']:,.2f}",
+              delta=f"{cuenta['pl_dia']:+,.2f} hoy ({cuenta['pl_dia_pct']:+.2f}%)")
+    c2.metric("Efectivo",         f"USD {cuenta['efectivo']:,.2f}")
+    c3.metric("Poder de compra",  f"USD {cuenta['poder_compra']:,.2f}")
+    c4.metric("Nivel de opciones", f"Nivel {cuenta['nivel_opciones']}")
+
+    st.markdown("---")
+
+    # ── Posiciones abiertas
+    st.subheader("📌 Posiciones Abiertas")
+    df_pos = posiciones_abiertas()
+    if df_pos.empty:
+        st.info("Sin posiciones abiertas. Envía una orden abajo para empezar.")
+    else:
+        st.dataframe(df_pos, width="stretch", hide_index=True)
+        st.caption(
+            "Ordenadas por P&L: las que peor van aparecen primero, "
+            "para revisar el riesgo antes que la ganancia."
+        )
+        col_cerrar, _ = st.columns([2, 3])
+        simbolo_cerrar = col_cerrar.selectbox(
+            "Cerrar posición:", [""] + df_pos["Símbolo"].tolist(), key="cerrar_pos"
+        )
+        if simbolo_cerrar and col_cerrar.button(f"❌ Cerrar {simbolo_cerrar} a mercado"):
+            ok_c, msg_c = cerrar_posicion(simbolo_cerrar)
+            (st.success if ok_c else st.error)(msg_c)
+            st.rerun()
+
+    st.markdown("---")
+
+    # ── Envío de órdenes
+    st.subheader("🚀 Enviar Orden")
+    instrumento = st.radio(
+        "Instrumento:", ["🎯 Opción (contrato OCC)", "🏢 Acción"], horizontal=True
+    )
+    es_opcion_ui = instrumento.startswith("🎯")
+
+    oc1, oc2 = st.columns(2)
+    if es_opcion_ui:
+        simbolo_orden = oc1.text_input(
+            "Contrato OCC:", "",
+            help="Formato: TICKER + AAMMDD + C/P + strike x1000 en 8 dígitos. "
+                 "Ej: AAPL260724C00330000 = call de AAPL, 24-jul-2026, strike 330.",
+        ).upper().strip()
+        oc2.info(
+            "⚠️ Alpaca **no admite bracket en opciones**: solo se envía la entrada. "
+            "El stop y el objetivo debes vigilarlos tú desde la terminal."
+        )
+        stop_ui = tp_ui = None
+    else:
+        simbolo_orden = oc1.text_input("Ticker:", "", help="Ej: AAPL, NVDA, SPY").upper().strip()
+        stop_ui = oc2.number_input("Stop loss (USD, 0 = sin bracket):",   min_value=0.0, value=0.0, step=0.01)
+        tp_ui   = oc2.number_input("Take profit (USD, 0 = sin bracket):", min_value=0.0, value=0.0, step=0.01)
+
+    tc1, tc2, tc3 = st.columns(3)
+    lado_ui = tc1.selectbox("Lado:", ["Comprar", "Vender"])
+    tipo_ui = tc2.selectbox("Tipo de orden:", ["limit", "market"])
+    precio_lim = tc3.number_input(
+        "Precio límite (USD):", min_value=0.0, value=0.0, step=0.01,
+        disabled=(tipo_ui == "market"),
+    )
+
+    # ── Calculadora de tamaño: la pieza que faltaba en la terminal
+    st.markdown("##### 📏 Tamaño de la posición")
+    st.caption(
+        "El plan de la IA dice dónde entrar y salir, pero no **cuánto**. "
+        "Con capital pequeño esa es la decisión que más pesa."
+    )
+    sc1, sc2, sc3 = st.columns(3)
+    riesgo_pct_ui = sc1.slider("Riesgo por operación (% del equity):", 0.25, 5.0, 1.0, 0.25)
+    precio_ref = precio_lim if precio_lim > 0 else 0.0
+    sugerido = calcular_tamano(
+        capital        = cuenta["equity"],
+        riesgo_pct     = riesgo_pct_ui,
+        precio_entrada = precio_ref,
+        precio_stop    = (stop_ui if (stop_ui and not es_opcion_ui) else None),
+        es_opcion      = es_opcion_ui,
+    )
+    sc2.metric("Sugerido",   f"{sugerido['cantidad']} {'contratos' if es_opcion_ui else 'acciones'}")
+    sc3.metric("Riesgo real", f"USD {sugerido.get('riesgo_real', 0):,.2f}")
+    if sugerido.get("aviso"):
+        st.warning(sugerido["aviso"])
+    if precio_ref <= 0:
+        st.caption("💡 Escribe un **precio límite** arriba para que calcule el tamaño sugerido.")
+
+    cantidad_ui = st.number_input(
+        "Cantidad a enviar:", min_value=0, value=int(sugerido["cantidad"]), step=1
+    )
+    if cantidad_ui > 0 and precio_ref > 0:
+        costo_est = cantidad_ui * precio_ref * (100 if es_opcion_ui else 1)
+        st.caption(f"Costo estimado de la operación: **USD {costo_est:,.2f}**")
+
+    # ── Confirmación explícita: nada se envía por accidente
+    confirmar = st.checkbox("Confirmo que quiero enviar esta orden a la cuenta de papel")
+    if st.button("🚀 Enviar orden", type="primary", disabled=not confirmar):
+        if not simbolo_orden:
+            st.error("Falta el símbolo.")
+        elif cantidad_ui < 1:
+            st.error("La cantidad debe ser al menos 1.")
+        else:
+            lado_api = "buy" if lado_ui == "Comprar" else "sell"
+            if es_opcion_ui:
+                ok_o, msg_o = enviar_orden_opcion(
+                    simbolo_orden, int(cantidad_ui), lado=lado_api,
+                    tipo=tipo_ui, precio_limite=(precio_lim or None),
+                )
+            else:
+                ok_o, msg_o = enviar_orden_accion(
+                    simbolo_orden, int(cantidad_ui), lado=lado_api,
+                    tipo=tipo_ui, precio_limite=(precio_lim or None),
+                    stop_loss=(stop_ui or None), take_profit=(tp_ui or None),
+                )
+            (st.success if ok_o else st.error)(msg_o)
+
+    st.markdown("---")
+
+    # ── Historial de órdenes
+    st.subheader("📜 Órdenes Recientes")
+    df_ord = ordenes(estado="all", limite=25)
+    if df_ord.empty:
+        st.info("Todavía no has enviado ninguna orden.")
+    else:
+        st.dataframe(df_ord.drop(columns=["id"]), width="stretch", hide_index=True)
+        pendientes = df_ord[df_ord["Estado"].isin(
+            ["new", "accepted", "pending_new", "partially_filled"]
+        )]
+        if not pendientes.empty:
+            id_cancelar = st.selectbox(
+                "Cancelar orden pendiente:", [""] + pendientes["id"].tolist(),
+                format_func=lambda x: "" if not x else
+                    f"{pendientes[pendientes['id'] == x]['Símbolo'].iloc[0]} ({x[:8]})",
+            )
+            if id_cancelar and st.button("❌ Cancelar orden"):
+                ok_x, msg_x = cancelar_orden(id_cancelar)
+                (st.success if ok_x else st.error)(msg_x)
+                st.rerun()
 
