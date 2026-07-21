@@ -524,9 +524,12 @@ def _calcular_score_horizonte(ticker_obj, fechas_horizonte, precio_spot):
     bias = dc / dt if dt > 0 else 0.5
     so = int(30 + abs(bias - 0.5) * 2 * 65)
 
-    ica = df_calls["impliedVolatility"].replace(0, np.nan).mean() if not df_calls.empty else 0
-    ipa = df_puts ["impliedVolatility"].replace(0, np.nan).mean() if not df_puts.empty  else 0
-    iv_avg = np.nanmean([ica, ipa]) if (ica or ipa) else 0.30
+    ica = df_calls["impliedVolatility"].replace(0, np.nan).mean() if not df_calls.empty else np.nan
+    ipa = df_puts ["impliedVolatility"].replace(0, np.nan).mean() if not df_puts.empty  else np.nan
+    # Guardia anti-NaN: NaN es truthy, así que `if (ica or ipa)` no protegía
+    # y la tabla mostraba "IV Avg%: nan" cuando la cadena venía sin IV
+    _ivs = [v for v in (ica, ipa) if v == v and v > 0]
+    iv_avg = float(np.mean(_ivs)) if _ivs else 0.30
     ivr = iv_avg / 0.30
     if ivr > 2.0:   si = 90
     elif ivr > 1.5: si = 75
@@ -585,14 +588,22 @@ def _analizar_ticker(args: tuple) -> dict | None:
     """
     ticker_sym, hist_diario, umbral = args
     try:
-        from modules.opciones_cboe import cadena_cboe, vencimientos_disponibles
+        from modules.opciones_cboe import cadena_cboe, vencimientos_disponibles, precio_spot as _spot_cboe
 
         t = yf.Ticker(ticker_sym)
         fechas = vencimientos_disponibles(ticker_sym)
         if not fechas: return None
 
-        info = t.fast_info
-        precio = getattr(info, "last_price", None) or getattr(info, "regular_market_price", None) or 0.0
+        # Spot: primero CBOE (ya viene en la descarga cacheada de la cadena,
+        # cero peticiones extra); fast_info de Yahoo solo como respaldo —
+        # es el primer endpoint que muere con los rate limits en la nube
+        precio = _spot_cboe(ticker_sym) or 0.0
+        if not precio:
+            try:
+                info = t.fast_info
+                precio = getattr(info, "last_price", None) or getattr(info, "regular_market_price", None) or 0.0
+            except Exception:
+                precio = 0.0
         if not precio: return None
 
         res = {"ticker": ticker_sym, "precio": precio}
@@ -819,6 +830,12 @@ def construir_grafico_radar(resultado_ticker: dict) -> go.Figure | None:
 # REPORTE IA — PROMPT ENRIQUECIDO (cerebro v3)
 # ══════════════════════════════════════════════════════
 
+def _reglas_riesgo() -> str:
+    """Bloque de disciplina de riesgo compartido (import diferido: evita ciclo)."""
+    from modules.validador_plan import REGLAS_RIESGO_PROMPT
+    return REGLAS_RIESGO_PROMPT
+
+
 def _generar_reporte_ia(ticker, precio, scores_quant, swing_scan, contexto_macro,
                          muros_scalp, muros_swing, muros_macro,
                          niveles_dia: dict | None = None) -> str:
@@ -836,7 +853,17 @@ def _generar_reporte_ia(ticker, precio, scores_quant, swing_scan, contexto_macro
     sq_str  = "RELEASE (explosion activa)" if sc.get("squeeze_release") else ("ACTIVO (energia acumulada)" if sc.get("squeeze_activo") else "Inactivo")
     mac     = contexto_macro
     ses     = mac.get("sesgo_macro", "desconocido").upper()
-    confluencia_macro = "VA A FAVOR del mercado general." if ses in senal or ses in ("NEUTRO", "MIXTO") else "VA EN CONTRA del mercado — stop mas ajustado obligatorio."
+    # Coincidencia direccional REAL señal vs macro. El código anterior hacía
+    # `ses in senal` ("ALCISTA" in "BUY CALL" → siempre False), por lo que
+    # toda señal se reportaba "EN CONTRA del mercado" aunque fuera a favor.
+    if ses in ("NEUTRO", "MIXTO", "DESCONOCIDO"):
+        confluencia_macro = "mercado sin sesgo claro — la señal se evalúa por sus propios méritos."
+    elif (ses == "ALCISTA" and "CALL" in senal) or (ses == "BAJISTA" and "PUT" in senal):
+        confluencia_macro = "VA A FAVOR del mercado general."
+    elif "CALL" in senal or "PUT" in senal:
+        confluencia_macro = "VA EN CONTRA del mercado — stop mas ajustado obligatorio."
+    else:
+        confluencia_macro = "sin señal direccional activa."
 
     # Sub-scores para desglose completo
     is_bull = "CALL" in senal
@@ -931,6 +958,8 @@ INSTRUCCIONES (respeta este orden exacto):
    Factor que invalidaria el setup
    Si IV Rank > 65%: recomendar spread especifico en lugar de compra simple
 
+{_reglas_riesgo()}
+
 Al FINAL del reporte añade un bloque de codigo con SOLO este JSON (numeros sin comillas):
 ```json
 {{"sesgo": "alcista|bajista|neutral", "direccion": "largo|corto|fuera", "entrada": 0.0, "stop": 0.0, "tp1": 0.0}}
@@ -954,8 +983,10 @@ Maximo 450 palabras. Niveles numericos exactos. Sin frases genericas.
         "ema8":            swing_scan.get("ema8", precio),
         "ema21":           swing_scan.get("ema21", precio),
         "razones":         swing_scan.get("razones", []),
-        "mejor_call_strike": muros_scalp[0]["strike"] if muros_scalp else precio * 1.05,
-        "mejor_put_strike":  muros_scalp[-1]["strike"] if muros_scalp else precio * 0.95,
+        # Filtrado por tipo: [-1] a secas podía devolver un muro CALL como
+        # "put strike" cuando la lista no traía puts
+        "mejor_call_strike": next((m["strike"] for m in muros_scalp if m["tipo"] == "CALL"), precio * 1.05),
+        "mejor_put_strike":  next((m["strike"] for m in muros_scalp if m["tipo"] == "PUT"),  precio * 0.95),
         "pcr":    scores_quant.get("scalping", {}).get("pcr", 1.0) if scores_quant.get("scalping") else 1.0,
         "iv_avg": scores_quant.get("scalping", {}).get("iv_avg", 30) if scores_quant.get("scalping") else 30,
     }
@@ -1069,13 +1100,19 @@ def _procesar_calls_baratos_ticker(args: tuple) -> list[dict]:
     ticker, presupuesto, dte_min, dte_max, oi_min, spread_max = args
     contratos = []
     try:
-        from modules.opciones_cboe import cadena_cboe, vencimientos_disponibles
+        from modules.opciones_cboe import cadena_cboe, vencimientos_disponibles, precio_spot as _spot_cboe
 
         t = yf.Ticker(ticker)
         fechas = vencimientos_disponibles(ticker)
         if not fechas:
             return []
-        spot = getattr(t.fast_info, "last_price", None) or 0.0
+        # Spot desde CBOE (misma descarga cacheada); Yahoo solo de respaldo
+        spot = _spot_cboe(ticker) or 0.0
+        if not spot:
+            try:
+                spot = getattr(t.fast_info, "last_price", None) or 0.0
+            except Exception:
+                spot = 0.0
         if not spot:
             return []
 
@@ -1124,10 +1161,23 @@ def _procesar_calls_baratos_ticker(args: tuple) -> list[dict]:
             ]
 
             for _, fila in c.iterrows():
-                iv    = float(fila.get("impliedVolatility", 0) or 0)
-                delta = _delta_call_bs(spot, fila["strike"], dte, iv)
-                if delta is None or delta < 0.10:
-                    continue  # lotería pura: casi sin probabilidad, descartar
+                # IV con guardia anti-NaN: float(nan) es truthy y antes se
+                # colaba hasta int(score) → ValueError → el except exterior
+                # descartaba TODOS los contratos del ticker en silencio
+                iv_raw = fila.get("impliedVolatility", 0)
+                iv     = float(iv_raw) if (iv_raw == iv_raw and iv_raw) else 0.0
+
+                # Delta real de la cadena (CBOE) si existe; Black-Scholes
+                # local solo como respaldo cuando falta
+                d_raw = fila.get("delta")
+                if d_raw is not None and d_raw == d_raw and d_raw != 0:
+                    delta = float(d_raw)
+                else:
+                    delta = _delta_call_bs(spot, fila["strike"], dte, iv)
+                if delta is None or delta != delta or delta < 0.10:
+                    continue  # lotería pura o sin datos suficientes: descartar
+                if iv <= 0:
+                    continue  # sin IV utilizable no hay score honesto
 
                 breakeven = fila["strike"] + fila["ask"]
                 pct_be    = (breakeven / spot - 1) * 100

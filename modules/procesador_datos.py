@@ -299,6 +299,10 @@ def procesar_datos_tecnicos(hist: pd.DataFrame) -> dict:
     perdida  = (-delta_c.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
     rs       = ganancia / perdida.replace(0, np.nan)
     rsi_14   = float((100 - 100 / (1 + rs)).iloc[-1])
+    # Sin pérdidas en la ventana la división da NaN y el prompt mostraba
+    # "RSI(14): nan". Solo subidas → 100; plano total → 50 neutral.
+    if rsi_14 != rsi_14:
+        rsi_14 = 100.0 if float(ganancia.iloc[-1]) > 0 else 50.0
 
     # RVOL — robusto a vela en curso (máx entre vela actual y última completa)
     vol_prom = hist['Volume'].iloc[-21:-1].mean()

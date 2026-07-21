@@ -18,7 +18,7 @@ from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_ra
 from modules.ai_client import configurar_ia, llamar_ia, mostrar_estado_ia_sidebar, proveedor_activo
 from modules.contexto_macro import obtener_contexto_macro_global, mostrar_metricas_macro
 from modules.auth import requerir_login, mostrar_usuario_sidebar
-from modules.validador_plan import extraer_plan, validar_plan, RB_MINIMO
+from modules.validador_plan import extraer_plan, validar_plan, RB_MINIMO, REGLAS_RIESGO_PROMPT
 from modules.opciones_cboe import mostrar_salud_datos, mostrar_salud_datos_lista
 from modules.broker_alpaca import (
     configurar_broker, broker_activo, estado_cuenta, mercado_abierto,
@@ -98,27 +98,10 @@ def analizar_con_gemini(
         regla_stop = ("STOP LOSS: ancla el stop a la ESTRUCTURA (bajo el mínimo relevante o sobre el "
                       "máximo relevante); NO uses el múltiplo de ATR — en velas de esta temporalidad es demasiado amplio.")
 
-    # Disciplina de riesgo — aplica a bolsa y cripto por igual.
-    # Nace de observar que la IA entregaba planes con R/B por debajo de 1 y
-    # convicción declarada BAJA: el validador los rechazaba después, pero la
-    # IA seguía fabricándolos. Mejor enseñarle el estándar antes que corregir
-    # a posteriori. RB_MINIMO se importa del validador: una sola fuente de verdad.
-    bloque_disciplina = f"""
-        DISCIPLINA DE RIESGO — CONDICIONES PREVIAS AL PLAN (obligatorias):
-        - CALCULA el ratio R/B = (TP − entrada) / (entrada − stop) ANTES de proponer nada.
-          Si con niveles REALES de estructura no alcanza {RB_MINIMO}, la respuesta correcta es
-          "direccion": "fuera", y dilo explícitamente: "la estructura no ofrece un R/B aceptable".
-        - PROHIBIDO fabricar el ratio: no alejes el TP ni acerques el stop para que salga el número.
-          Los niveles los manda la estructura del precio, no la aritmética que te conviene.
-        - Si tu convicción es BAJA, o el sesgo es NEUTRAL sin catalizador claro, la recomendación
-          por defecto es "fuera". No tienes ninguna obligación de encontrar una operación:
-          quedarse fuera es una conclusión profesional legítima y FRECUENTE. Un reporte que
-          concluye "hoy aquí no hay nada" vale tanto como uno que encuentra un setup.
-        - NO propongas un LARGO mientras describes el contexto como bajista o lateral-bajista
-          (ni un CORTO en contexto alcista), salvo que justifiques un catalizador táctico concreto.
-        - Indica el % DE MOVIMIENTO que necesita el subyacente desde la entrada hasta el TP.
-          Es el dato que decide si una opción puede capturarlo o si el spread y el theta se lo comen.
-    """
+    # Disciplina de riesgo compartida (validador_plan.REGLAS_RIESGO_PROMPT):
+    # una sola fuente de verdad para los TRES prompts que piden plan
+    # (Individual, Derivados y Radar) y para el umbral que verifica el código.
+    bloque_disciplina = REGLAS_RIESGO_PROMPT
 
     bloque_conclusion = f"""
         SECCIÓN FINAL OBLIGATORIA — cierra SIEMPRE el reporte con una sección
@@ -260,9 +243,13 @@ def enviar_alerta_telegram(mensaje: str) -> None:
             try:
                 respuesta = requests.post(url, json=payload, timeout=10)
                 if respuesta.status_code != 200:
-                    # Reintento sin Markdown si falla el formato
-                    payload_seguro = {"chat_id": chat_destino, "text": fragmento}
-                    requests.post(url, json=payload_seguro, timeout=10)
+                    # Reintento sin Markdown si falla el formato — también
+                    # cuenta como éxito si esta segunda vía entrega
+                    reintento = requests.post(
+                        url, json={"chat_id": chat_destino, "text": fragmento}, timeout=10
+                    )
+                    if reintento.status_code == 200:
+                        envios_exitosos += 1
                 else:
                     envios_exitosos += 1
             except requests.exceptions.RequestException as e:
@@ -1246,7 +1233,9 @@ elif tipo_mercado == "🧱 Flujo de Opciones (Derivados)" and simbolo:
                                delta=f"sesgo mercado: {v.get('sesgo', 'n/a')}", delta_color="off")
                     vc2.metric("Entrada", f"USD {v['entrada']:,.2f}")
                     vc3.metric("Stop", f"USD {v['stop']:,.2f}")
-                    vc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" + (f" ({v['rb']})" if v.get('rb') else ""))
+                    rb_d = v.get("rb")
+                    vc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" +
+                               (f" · R/B {rb_d} " + ("⚠️" if rb_d < RB_MINIMO else "✅") if rb_d else ""))
                 for aviso in v.get("avisos", []):
                     (st.warning if aviso.startswith("⚠️") else st.info if aviso.startswith("ℹ️") else st.success)(aviso)
         else:
@@ -1489,7 +1478,9 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
                                    delta=f"sesgo mercado: {v.get('sesgo', 'n/a')}", delta_color="off")
                         rc2.metric("Entrada", f"USD {v['entrada']:,.2f}")
                         rc3.metric("Stop", f"USD {v['stop']:,.2f}")
-                        rc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" + (f" ({v['rb']})" if v.get('rb') else ""))
+                        rb_r = v.get("rb")
+                        rc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" +
+                                   (f" · R/B {rb_r} " + ("⚠️" if rb_r < RB_MINIMO else "✅") if rb_r else ""))
                     for aviso in v.get("avisos", []):
                         (st.warning if aviso.startswith("⚠️") else st.info if aviso.startswith("ℹ️") else st.success)(aviso)
 

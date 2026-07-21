@@ -50,13 +50,15 @@ _PATRON_OCC = re.compile(r"^([A-Z]+)(\d{6})([CP])(\d{8})")
 def _simbolo_cboe(simbolo: str) -> str:
     """Traduce el ticker al formato de CBOE.
 
-    Los índices llevan guion bajo delante (^SPX → _SPX); las acciones y
-    ETFs van tal cual.
+    - Índices: guion bajo delante (^SPX → _SPX).
+    - Acciones clase A/B: Yahoo usa guion (BRK-B) pero CBOE usa punto
+      (BRK.B) — verificado empíricamente: con guion el CDN devuelve
+      AccessDenied y el ticker se descartaba como "sin opciones".
     """
     s = (simbolo or "").upper().strip()
     if s.startswith("^"):
         return "_" + s[1:]
-    return s
+    return s.replace("-", ".")
 
 
 # ==========================================

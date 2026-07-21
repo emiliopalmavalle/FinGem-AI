@@ -24,6 +24,27 @@ import re
 
 RB_MINIMO = 1.5  # debajo de esto el plan se marca como no operable
 
+# Bloque de disciplina de riesgo para TODOS los prompts que piden un plan
+# (Análisis Individual, Derivados y Radar de Opciones). Vive aquí junto a
+# RB_MINIMO para que lo que se le exige a la IA y lo que verifica el código
+# nunca puedan discrepar.
+REGLAS_RIESGO_PROMPT = f"""
+DISCIPLINA DE RIESGO — CONDICIONES PREVIAS AL PLAN (obligatorias):
+- CALCULA el ratio R/B = (TP − entrada) / (entrada − stop) ANTES de proponer nada.
+  Si con niveles REALES de estructura no alcanza {RB_MINIMO}, la respuesta correcta es
+  "direccion": "fuera", y dilo explícitamente: "la estructura no ofrece un R/B aceptable".
+- PROHIBIDO fabricar el ratio: no alejes el TP ni acerques el stop para que salga el número.
+  Los niveles los manda la estructura del precio, no la aritmética que te conviene.
+- Si tu convicción es BAJA, o el sesgo es NEUTRAL sin catalizador claro, la recomendación
+  por defecto es "fuera". No tienes ninguna obligación de encontrar una operación:
+  quedarse fuera es una conclusión profesional legítima y FRECUENTE. Un reporte que
+  concluye "hoy aquí no hay nada" vale tanto como uno que encuentra un setup.
+- NO propongas un LARGO mientras describes el contexto como bajista o lateral-bajista
+  (ni un CORTO en contexto alcista), salvo que justifiques un catalizador táctico concreto.
+- Indica el % DE MOVIMIENTO que necesita el subyacente desde la entrada hasta el TP.
+  Es el dato que decide si una opción puede capturarlo o si el spread y el theta se lo comen.
+"""
+
 
 def extraer_plan(texto_analisis: str) -> tuple[dict | None, str]:
     """Extrae el bloque JSON del plan y lo retira del texto mostrado.

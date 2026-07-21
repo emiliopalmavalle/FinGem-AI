@@ -32,6 +32,8 @@ def analizar_muros_con_ia(
     niveles_dia : niveles operables del vencimiento de day trading
                   (put_wall, call_wall, max_pain, pcr, flujo_fresco, dte)
     """
+    from modules.validador_plan import REGLAS_RIESGO_PROMPT as reglas_riesgo
+
     n = niveles_dia or {}
     fmt = lambda v: f"USD {v:.2f}" if v is not None else "N/A"
     seccion_dia = f"""
@@ -58,6 +60,7 @@ def analizar_muros_con_ia(
        y Max Pain como imán, define ENTRADA exacta, STOP LOSS estricto (fuera del muro) y
        TAKE PROFIT (antes del muro opuesto). Indica si el sesgo del día es alcista, bajista o
        rango, considerando el PCR del vencimiento y el flujo fresco.
+    {reglas_riesgo}
     2. VOLUMEN INUSUAL: si hay strikes con volumen > OI, señálalos como zonas de interés/imanes
        del día. NO afirmes si fue compra o venta — esa información no existe en estos datos.
     3. VISIÓN MACRO (breve): ¿hacia dónde apuesta el Smart Money en 30/90/180 días?

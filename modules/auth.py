@@ -20,6 +20,7 @@ Uso en FINGEM.py (justo después de st.set_page_config):
 """
 
 import hashlib
+import hmac
 import time
 import streamlit as st
 
@@ -37,7 +38,9 @@ def _hash(password: str) -> str:
 def _credenciales_validas(usuario: str, password: str) -> bool:
     usuarios = st.secrets.get("usuarios", {})
     hash_guardado = usuarios.get(usuario)
-    return bool(hash_guardado) and _hash(password) == hash_guardado
+    # compare_digest: comparación en tiempo constante (== permite inferir
+    # por timing cuántos caracteres del hash coinciden)
+    return bool(hash_guardado) and hmac.compare_digest(_hash(password), str(hash_guardado))
 
 
 def requerir_login() -> None:
