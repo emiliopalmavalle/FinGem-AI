@@ -892,6 +892,7 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                 # entonces tiene sentido mostrar la salud de esa fuente (en BMV
                 # y cripto no hay opciones listadas y no es una anomalía)
                 opciones_usadas = False
+                spread_info = None  # costo de ejecución ATM (para la UI)
                 if "Individual" in tipo_mercado:
                     try:
                         # Fuente CBOE: yfinance devuelve openInterest=0, bid/ask=0
@@ -916,13 +917,17 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                                 cadena_cboe(simbolo, fecha_op, spot=precio_actual), precio_actual
                             )
                             _fo = lambda v: f"USD {v:.2f}" if v is not None else "N/A"
+                            _sp = niv_op.get("spread_atm")
+                            spread_info = _sp  # para la línea visible tras el análisis
                             datos_extra_str += (
                                 f" NIVELES DE OPCIONES (vencimiento {fecha_op}): "
                                 f"Soporte Put Wall {_fo(niv_op.get('put_wall'))}, "
                                 f"Resistencia Call Wall {_fo(niv_op.get('call_wall'))}, "
                                 f"Max Pain {_fo(niv_op.get('max_pain'))}, "
                                 f"PCR {round(niv_op['pcr'], 2) if niv_op.get('pcr') else 'N/A'}. "
-                                f"Flujo fresco hoy: {'; '.join(niv_op.get('flujo_fresco', [])) or 'ninguno'}."
+                                f"Flujo fresco hoy: {'; '.join(niv_op.get('flujo_fresco', [])) or 'ninguno'}. "
+                                + (f"COSTO DE EJECUCIÓN EN OPCIONES (spread ATM): {_sp['pct']}% — "
+                                   f"{_sp['etiqueta']} ({_sp['consejo']})." if _sp else "")
                             )
                     except Exception:
                         pass  # sin opciones o Yahoo falló: el análisis sigue sin este bloque
@@ -1127,6 +1132,17 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
             #     salieron y con qué cobertura
             if opciones_usadas:
                 mostrar_salud_datos(simbolo)
+                # Costo de entrar y salir en las opciones de este activo:
+                # se paga dos veces (entrada + salida) y decide si el edge
+                # sobrevive a la ejecución — merece verse, no solo estar en el prompt
+                if spread_info:
+                    (st.error if spread_info["etiqueta"] == "MUY ALTO"
+                     else st.warning if spread_info["etiqueta"] == "ALTO"
+                     else st.caption)(
+                        f"{spread_info['emoji']} **Costo de ejecución en opciones** "
+                        f"(spread ATM): {spread_info['pct']}% — {spread_info['etiqueta']}. "
+                        f"{spread_info['consejo'].capitalize()}."
+                    )
 
             # ── Validación numérica del plan (auditoría P7):
             #    la IA redacta, la aritmética se verifica en Python
@@ -1212,6 +1228,16 @@ elif tipo_mercado == "🧱 Flujo de Opciones (Derivados)" and simbolo:
                 st.warning(
                     "🔥 **Volumen inusual hoy (vol > OI):** " + " · ".join(niveles_dia["flujo_fresco"])
                     + " — dirección desconocida: zonas de interés, no apuestas confirmadas."
+                )
+            # Costo de entrar y salir: se paga dos veces y decide si el edge
+            # sobrevive a la ejecución
+            sp_d = niveles_dia.get("spread_atm")
+            if sp_d:
+                (st.error if sp_d["etiqueta"] == "MUY ALTO"
+                 else st.warning if sp_d["etiqueta"] == "ALTO"
+                 else st.caption)(
+                    f"{sp_d['emoji']} **Costo de ejecución** (spread ATM): {sp_d['pct']}% — "
+                    f"{sp_d['etiqueta']}. {sp_d['consejo'].capitalize()}."
                 )
 
         if fig_visual is not None:

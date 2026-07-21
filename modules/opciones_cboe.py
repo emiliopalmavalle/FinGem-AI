@@ -187,6 +187,62 @@ def descargar_cadena_cruda(simbolo: str) -> dict:
         return {}
 
 
+def clasificar_spread(pct: float) -> dict:
+    """Clasifica el costo de entrar y salir (spread bid/ask) de una opción.
+
+    El spread es un costo REAL que se paga dos veces (entrada y salida) y
+    que las tablas mostraban como número pelado sin juicio. Umbrales para
+    operativa direccional de 1-3 días:
+      ≤6%   BAJO     — ejecución barata
+      ≤15%  REGULAR  — usar siempre orden límite
+      ≤30%  ALTO     — el costo se come parte importante del movimiento
+      >30%  MUY ALTO — prácticamente prohibitivo a 1-3 días
+    """
+    if pct <= 6:
+        return {"etiqueta": "BAJO", "emoji": "🟢",
+                "consejo": "ejecución barata; orden límite al mid se llena rápido"}
+    if pct <= 15:
+        return {"etiqueta": "REGULAR", "emoji": "🟡",
+                "consejo": "usa SIEMPRE orden límite cerca del mid, nunca market"}
+    if pct <= 30:
+        return {"etiqueta": "ALTO", "emoji": "🔴",
+                "consejo": "entrar y salir cuesta una parte importante del movimiento esperado — exige más edge o reduce tamaño"}
+    return {"etiqueta": "MUY ALTO", "emoji": "⛔",
+            "consejo": "prácticamente prohibitivo para 1-3 días; solo con convicción excepcional y límite paciente"}
+
+
+def spread_atm(cadena, spot: float) -> Optional[dict]:
+    """Spread bid/ask del strike más cercano al dinero, clasificado.
+
+    Promedia el spread del call y el put ATM cuando ambos cotizan (el costo
+    real de ejecutar cerca del dinero). Devuelve None si no hay cotizaciones
+    usables.
+
+    Returns:
+        dict {pct, etiqueta, emoji, consejo} o None.
+    """
+    if not spot or spot <= 0:
+        return None
+    spreads = []
+    for df in (getattr(cadena, "calls", None), getattr(cadena, "puts", None)):
+        try:
+            if df is None or df.empty:
+                continue
+            usables = df[(df["bid"] > 0) & (df["ask"] >= df["bid"])]
+            if usables.empty:
+                continue
+            fila = usables.loc[(usables["strike"] - spot).abs().idxmin()]
+            mid = (fila["bid"] + fila["ask"]) / 2.0
+            if mid > 0:
+                spreads.append((fila["ask"] - fila["bid"]) / mid * 100.0)
+        except Exception:
+            continue
+    if not spreads:
+        return None
+    pct = round(sum(spreads) / len(spreads), 1)
+    return {"pct": pct, **clasificar_spread(pct)}
+
+
 def salud_datos(simbolo: str) -> dict:
     """Cobertura real de la cadena descargada — detector de degradación.
 

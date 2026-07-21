@@ -36,7 +36,13 @@ def analizar_muros_con_ia(
 
     n = niveles_dia or {}
     fmt = lambda v: f"USD {v:.2f}" if v is not None else "N/A"
+    sp = n.get("spread_atm")
+    linea_spread = (
+        f"- Costo de entrar/salir (spread ATM): {sp['pct']}% — {sp['emoji']} {sp['etiqueta']} ({sp['consejo']})"
+        if sp else "- Costo de entrar/salir (spread ATM): sin dato"
+    )
     seccion_dia = f"""
+    {linea_spread}
     NIVELES OPERABLES DEL VENCIMIENTO DE DAY TRADING (DTE {n.get('dte', '?')}, {n.get('vencimiento', 'N/A')}):
     - Soporte (Put Wall, mayor OI abajo del spot): {fmt(n.get('put_wall'))}
     - Resistencia (Call Wall, mayor OI arriba del spot): {fmt(n.get('call_wall'))}
@@ -152,8 +158,16 @@ def calcular_niveles_dia(cadena, precio_spot: float) -> dict:
       nuevo, la señal de actividad inusual más útil para 1-3 días)
     """
     niveles = {"put_wall": None, "call_wall": None, "max_pain": None,
-               "pcr": None, "flujo_fresco": []}
+               "pcr": None, "flujo_fresco": [], "spread_atm": None}
     try:
+        # Costo de entrar y salir (spread ATM clasificado): se calcula sobre
+        # la cadena completa ANTES de recortar columnas (necesita bid/ask)
+        try:
+            from modules.opciones_cboe import spread_atm as _spread_atm
+            niveles["spread_atm"] = _spread_atm(cadena, precio_spot)
+        except Exception:
+            pass
+
         calls = cadena.calls[['strike', 'openInterest', 'volume']].fillna(0)
         puts  = cadena.puts[['strike', 'openInterest', 'volume']].fillna(0)
 

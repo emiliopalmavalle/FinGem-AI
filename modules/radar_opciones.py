@@ -851,6 +851,15 @@ def _generar_reporte_ia(ticker, precio, scores_quant, swing_scan, contexto_macro
     razones = " | ".join(sc.get("razones", ["Sin confluencia"])) or "Sin confluencia detectada"
     ema_str = f"EMA 8: USD {sc.get('ema8','?')} | EMA 21: USD {sc.get('ema21','?')} | EMA 55: USD {sc.get('ema55','?')} | EMA 200: {sc.get('ema200','?')}"
     sq_str  = "RELEASE (explosion activa)" if sc.get("squeeze_release") else ("ACTIVO (energia acumulada)" if sc.get("squeeze_activo") else "Inactivo")
+
+    # Spread ATM clasificado: el número pelado no le decía nada a la IA
+    sp_pct = sc.get("spread_atm_pct")
+    if sp_pct is not None and sp_pct == sp_pct:
+        from modules.opciones_cboe import clasificar_spread
+        _cs = clasificar_spread(float(sp_pct))
+        spread_str = f"{sp_pct}% — {_cs['etiqueta']} (costo de entrar/salir: {_cs['consejo']})"
+    else:
+        spread_str = "N/A"
     mac     = contexto_macro
     ses     = mac.get("sesgo_macro", "desconocido").upper()
     # Coincidencia direccional REAL señal vs macro. El código anterior hacía
@@ -899,7 +908,7 @@ DESGLOSE TÉCNICO:
   Momentum EMA  : {sc.get('cruce_ema','N/A')}  (sub-score: {momd}/100)
   RSI(14)       : {sc.get('rsi','N/A')}  {'SOBREVENTA' if sc.get('rsi',50) < 32 else 'SOBRECOMPRA' if sc.get('rsi',50) > 68 else ''}  (sub-score: {rsid}/100)
   RVOL precio   : {sc.get('rvol_precio','N/A')}x media 20d  (sub-score: {rvd}/100)
-  Liquidez OPC  : {'OK' if sc.get('liquidez_ok') else 'INSUFICIENTE'}  |  Spread ATM: {sc.get('spread_atm_pct','N/A')}%  (sub-score: {liqd}/100)
+  Liquidez OPC  : {'OK' if sc.get('liquidez_ok') else 'INSUFICIENTE'}  |  Spread ATM: {spread_str}  (sub-score: {liqd}/100)
   Divergencia   : {'Alcista RSI detectada' if sc.get('div_bullish') else 'Bajista RSI detectada' if sc.get('div_bearish') else 'Sin divergencia'}
   {ema_str}
 

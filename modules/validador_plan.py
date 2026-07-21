@@ -43,6 +43,10 @@ DISCIPLINA DE RIESGO — CONDICIONES PREVIAS AL PLAN (obligatorias):
   (ni un CORTO en contexto alcista), salvo que justifiques un catalizador táctico concreto.
 - Indica el % DE MOVIMIENTO que necesita el subyacente desde la entrada hasta el TP.
   Es el dato que decide si una opción puede capturarlo o si el spread y el theta se lo comen.
+- COSTO DE EJECUCIÓN: si los datos incluyen el spread ATM, coméntalo SIEMPRE en el resumen
+  con su clasificación (BAJO / REGULAR / ALTO / MUY ALTO). Es un costo que se paga DOS veces
+  (al entrar y al salir). Con spread ALTO exige más edge o reduce el tamaño; con MUY ALTO la
+  recomendación por defecto para 1-3 días es quedarse fuera del instrumento de opciones.
 """
 
 
