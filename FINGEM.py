@@ -864,8 +864,11 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                 #        dónde están posicionados los market makers
                 if "Individual" in tipo_mercado:
                     try:
-                        tk_op = yf.Ticker(simbolo)
-                        fechas_op = tk_op.options
+                        # Fuente CBOE: yfinance devuelve openInterest=0, bid/ask=0
+                        # e IV basura, lo que anulaba los muros y disparaba falsos
+                        # "flujo fresco" (vol > OI siempre cierto con OI=0)
+                        from modules.opciones_cboe import cadena_cboe, vencimientos_disponibles
+                        fechas_op = vencimientos_disponibles(simbolo)
                         if fechas_op:
                             from modules.radar_derivados import (
                                 calcular_niveles_dia, encontrar_fecha_daytrading, encontrar_fecha_cercana,
@@ -878,7 +881,9 @@ if tipo_mercado in ["📈 Análisis Individual (NY / MX)", "🪙 Criptomonedas"]
                                 fecha_op = encontrar_fecha_cercana(fechas_op, 45)
                             else:  # Mensual
                                 fecha_op = encontrar_fecha_cercana(fechas_op, 90)
-                            niv_op = calcular_niveles_dia(tk_op.option_chain(fecha_op), precio_actual)
+                            niv_op = calcular_niveles_dia(
+                                cadena_cboe(simbolo, fecha_op, spot=precio_actual), precio_actual
+                            )
                             _fo = lambda v: f"USD {v:.2f}" if v is not None else "N/A"
                             datos_extra_str += (
                                 f" NIVELES DE OPCIONES (vencimiento {fecha_op}): "

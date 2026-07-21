@@ -268,22 +268,31 @@ def escanear_flujo_institucional(
                   dte y vencimiento del horizonte de 1-3 días
     """
     try:
+        # Fuente CBOE: yfinance entrega openInterest=0, bid/ask=0 e IV basura,
+        # lo que dejaba los muros en N/A y disparaba falsos "flujo fresco"
+        from modules.opciones_cboe import (
+            cadena_cboe, vencimientos_disponibles, precio_spot as spot_cboe,
+        )
+
         ticker = yf.Ticker(ticker_symbol)
-        fechas = ticker.options
+        fechas = vencimientos_disponibles(ticker_symbol)
 
         if not fechas:
             return pd.DataFrame(), "⚠️ Mercado ilíquido: no hay opciones disponibles para este activo.", None, {}
 
         hoy = datetime.now()
 
-        # Obtención del precio spot con fallbacks robustos
-        info = ticker.info
-        precio_spot = (
-            info.get('regularMarketPrice') or
-            info.get('currentPrice') or
-            info.get('previousClose') or
-            0.0
-        )
+        # Precio spot: CBOE lo trae en la misma descarga de la cadena; solo
+        # caemos a la llamada pesada de .info si esa vía falla
+        precio_spot = spot_cboe(ticker_symbol) or 0.0
+        if not precio_spot:
+            info = ticker.info
+            precio_spot = (
+                info.get('regularMarketPrice') or
+                info.get('currentPrice') or
+                info.get('previousClose') or
+                0.0
+            )
 
         if precio_spot == 0.0:
             return pd.DataFrame(), "❌ No se pudo obtener el precio spot del activo.", None, {}
@@ -314,7 +323,7 @@ def escanear_flujo_institucional(
                 dias_vencimiento = max(
                     (datetime.strptime(fecha_str, '%Y-%m-%d') - hoy).days, 0
                 )
-                cadena = ticker.option_chain(fecha_str)
+                cadena = cadena_cboe(ticker_symbol, fecha_str, spot=precio_spot)
             except Exception as e:
                 # Error en un horizonte específico no detiene los demás
                 continue
