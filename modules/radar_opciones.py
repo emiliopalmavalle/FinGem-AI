@@ -463,10 +463,14 @@ def _calcular_score_horizonte(ticker_obj, fechas_horizonte, precio_spot):
     Returns:
         dict con score, métricas y DataFrames de calls/puts, o None.
     """
+    # Fuente CBOE: yfinance da IV=0.00001 y no trae delta, lo que dejaba
+    # este score apoyado en una delta fija de 0.50 (ver más abajo)
+    from modules.opciones_cboe import cadena_cboe
+
     all_calls, all_puts = [], []
     for fecha in fechas_horizonte:
         try:
-            cad = ticker_obj.option_chain(fecha)
+            cad = cadena_cboe(getattr(ticker_obj, "ticker", ""), fecha, spot=precio_spot)
             c = cad.calls.copy(); c["_fecha"] = fecha
             p = cad.puts.copy();  p["_fecha"] = fecha
             all_calls.append(c); all_puts.append(p)
@@ -581,8 +585,10 @@ def _analizar_ticker(args: tuple) -> dict | None:
     """
     ticker_sym, hist_diario, umbral = args
     try:
+        from modules.opciones_cboe import cadena_cboe, vencimientos_disponibles
+
         t = yf.Ticker(ticker_sym)
-        fechas = t.options
+        fechas = vencimientos_disponibles(ticker_sym)
         if not fechas: return None
 
         info = t.fast_info
@@ -600,7 +606,7 @@ def _analizar_ticker(args: tuple) -> dict | None:
         niveles = {}
         try:
             fecha_dt = encontrar_fecha_daytrading(fechas)
-            cadena_dt = t.option_chain(fecha_dt)
+            cadena_dt = cadena_cboe(ticker_sym, fecha_dt, spot=precio)
             niveles = calcular_niveles_dia(cadena_dt, precio)
             niveles["vencimiento"] = fecha_dt
         except Exception:
@@ -1063,8 +1069,10 @@ def _procesar_calls_baratos_ticker(args: tuple) -> list[dict]:
     ticker, presupuesto, dte_min, dte_max, oi_min, spread_max = args
     contratos = []
     try:
+        from modules.opciones_cboe import cadena_cboe, vencimientos_disponibles
+
         t = yf.Ticker(ticker)
-        fechas = t.options
+        fechas = vencimientos_disponibles(ticker)
         if not fechas:
             return []
         spot = getattr(t.fast_info, "last_price", None) or 0.0
@@ -1091,7 +1099,7 @@ def _procesar_calls_baratos_ticker(args: tuple) -> list[dict]:
         for fecha in fechas_ok:
             dte = (datetime.strptime(fecha, "%Y-%m-%d") - hoy).days
             try:
-                calls = t.option_chain(fecha).calls
+                calls = cadena_cboe(ticker, fecha, spot=spot).calls
             except Exception:
                 continue
 
