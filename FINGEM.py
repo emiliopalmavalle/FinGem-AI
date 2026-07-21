@@ -14,7 +14,10 @@ from modules.radar_acciones import (
 )
 from modules.radar_etfs import escanear_etfs, ETFS_NY, ETFS_BMV
 from modules.radar_derivados import escanear_flujo_institucional
-from modules.radar_opciones import ejecutar_radar_opciones, construir_grafico_radar, escanear_calls_baratos
+from modules.radar_opciones import (
+    ejecutar_radar_opciones, construir_grafico_radar, escanear_calls_baratos,
+    generar_reporte_ia_ticker,
+)
 from modules.ai_client import configurar_ia, llamar_ia, mostrar_estado_ia_sidebar, proveedor_activo
 from modules.contexto_macro import obtener_contexto_macro_global, mostrar_metricas_macro
 from modules.auth import requerir_login, mostrar_usuario_sidebar
@@ -1363,6 +1366,8 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
             "reporte_ia": reporte_ia, "raw": raw, "contexto": contexto_macro,
             "lista": lista_radar,
         }
+        # Reportes IA por activo del escaneo anterior: quedan obsoletos
+        st.session_state.pop("_radar_ia_por_ticker", None)
 
     _scan = st.session_state.get("_radar_scan")
     if _scan:
@@ -1370,6 +1375,26 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
         fig_gamma, reporte_ia = _scan["fig_gamma"], _scan["reporte_ia"]
         raw, contexto_macro = _scan["raw"], _scan["contexto"]
         mostrar_salud_datos_lista(_scan["lista"])
+
+        def _mostrar_reporte_validado(reporte: str, precio_ref: float, atr_ref) -> None:
+            """Reporte IA + plan validado (métricas y avisos) — mismo pipeline
+            para el reporte del líder y los reportes on-demand por activo."""
+            plan_x, limpio = extraer_plan(reporte)
+            st.info(limpio)
+            if plan_x:
+                v = validar_plan(plan_x, precio_ref or 0, atr=atr_ref)
+                dir_v = v.get("direccion", "n/a")
+                if v.get("entrada") and dir_v not in ("fuera", "neutral", "n/a"):
+                    x1, x2, x3, x4 = st.columns(4)
+                    x1.metric("Operación", str(dir_v).capitalize(),
+                              delta=f"sesgo mercado: {v.get('sesgo', 'n/a')}", delta_color="off")
+                    x2.metric("Entrada", f"USD {v['entrada']:,.2f}")
+                    x3.metric("Stop", f"USD {v['stop']:,.2f}")
+                    rb_x = v.get("rb")
+                    x4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" +
+                              (f" · R/B {rb_x} " + ("⚠️" if rb_x < RB_MINIMO else "✅") if rb_x else ""))
+                for aviso in v.get("avisos", []):
+                    (st.warning if aviso.startswith("⚠️") else st.info if aviso.startswith("ℹ️") else st.success)(aviso)
 
         if df_quant.empty and df_swing.empty:
             st.warning("⚠️ No se obtuvieron datos de opciones. Verifica que los tickers tengan opciones listadas.")
@@ -1470,6 +1495,31 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
                         }
                         st.dataframe(pd.DataFrame(sub), width="stretch", hide_index=True)
 
+                    # ── Reporte IA del activo SELECCIONADO (on-demand):
+                    #    el escaneo solo genera el del líder; aquí se pide el
+                    #    de cualquier otro con un botón (una llamada por activo,
+                    #    cacheada en session_state y en el caché global 24h)
+                    st.markdown(f"#### 🤖 Setup IA — {ticker_detail}")
+                    lider_actual = df_swing["Ticker"].iloc[0] if not df_swing.empty else None
+                    reportes_ia = st.session_state.setdefault("_radar_ia_por_ticker", {})
+                    if ticker_detail == lider_actual and reporte_ia:
+                        st.caption("Este activo es el líder del escaneo — su reporte completo está abajo ⬇️")
+                    elif ticker_detail in reportes_ia:
+                        det = raw[ticker_detail]
+                        _mostrar_reporte_validado(
+                            reportes_ia[ticker_detail], det.get("precio", 0),
+                            (det.get("swing_scan") or {}).get("atr_14"),
+                        )
+                        if st.button(f"📤 Enviar reporte de {ticker_detail} a Telegram"):
+                            _, _limpio = extraer_plan(reportes_ia[ticker_detail])
+                            enviar_alerta_telegram(f"🎯 *Radar Opciones — {ticker_detail}*\n\n{_limpio}")
+                    elif st.button(f"🤖 Generar análisis IA para {ticker_detail}"):
+                        with st.spinner(f"Consultando {proveedor_activo()} para {ticker_detail}..."):
+                            reportes_ia[ticker_detail] = generar_reporte_ia_ticker(
+                                raw[ticker_detail], contexto_macro
+                            )
+                        st.rerun()
+
             st.markdown("---")
 
             # ── Reporte IA del ticker líder (con validación numérica del plan)
@@ -1477,28 +1527,14 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
                 lider_nombre = df_swing["Ticker"].iloc[0] if not df_swing.empty else "líder"
                 st.subheader(f"🤖 Setup Accionable IA — {lider_nombre}")
 
-                plan_r, reporte_limpio = extraer_plan(reporte_ia)
-                st.info(reporte_limpio)
-                if plan_r:
-                    lider_raw = raw.get(lider_nombre, {})
-                    precio_lider = lider_raw.get("precio", 0) or 0
-                    # ATR diario ya calculado en el swing scan del líder
-                    atr_lider = (lider_raw.get("swing_scan") or {}).get("atr_14")
-                    v = validar_plan(plan_r, precio_lider, atr=atr_lider)
-                    dir_v = v.get("direccion", "n/a")
-                    if v.get("entrada") and dir_v not in ("fuera", "neutral", "n/a"):
-                        rc1, rc2, rc3, rc4 = st.columns(4)
-                        rc1.metric("Operación", str(dir_v).capitalize(),
-                                   delta=f"sesgo mercado: {v.get('sesgo', 'n/a')}", delta_color="off")
-                        rc2.metric("Entrada", f"USD {v['entrada']:,.2f}")
-                        rc3.metric("Stop", f"USD {v['stop']:,.2f}")
-                        rb_r = v.get("rb")
-                        rc4.metric("TP / R:B", f"USD {v['tp1']:,.2f}" +
-                                   (f" · R/B {rb_r} " + ("⚠️" if rb_r < RB_MINIMO else "✅") if rb_r else ""))
-                    for aviso in v.get("avisos", []):
-                        (st.warning if aviso.startswith("⚠️") else st.info if aviso.startswith("ℹ️") else st.success)(aviso)
+                lider_raw = raw.get(lider_nombre, {})
+                _mostrar_reporte_validado(
+                    reporte_ia, lider_raw.get("precio", 0) or 0,
+                    (lider_raw.get("swing_scan") or {}).get("atr_14"),
+                )
 
                 if st.button("📤 Enviar reporte a Telegram"):
+                    _, reporte_limpio = extraer_plan(reporte_ia)
                     enviar_alerta_telegram(f"🎯 *Radar Opciones v3 — {lider_nombre}*\n\n{reporte_limpio}")
 
 

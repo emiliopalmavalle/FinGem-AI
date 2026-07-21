@@ -1057,6 +1057,25 @@ def ejecutar_radar_opciones(lista_tickers: list,
     return df_quant, df_swing, fig_gamma, reporte_ia, raw, contexto
 
 
+def generar_reporte_ia_ticker(resultado_ticker: dict, contexto_macro: dict) -> str:
+    """Reporte IA on-demand para UN activo del escaneo (no solo el líder).
+
+    Reutiliza el mismo prompt enriquecido que el reporte del líder; el caché
+    global de ai_client (24h por prompt idéntico) evita gastar tokens si se
+    vuelve a pedir el mismo activo el mismo día.
+    """
+    def _m(h):
+        return resultado_ticker.get(h, {}).get("muros", []) if resultado_ticker.get(h) else []
+
+    return _generar_reporte_ia(
+        ticker=resultado_ticker["ticker"], precio=resultado_ticker["precio"],
+        scores_quant={h: resultado_ticker.get(h) for h in HORIZONTE_DTE},
+        swing_scan=resultado_ticker.get("swing_scan", {}), contexto_macro=contexto_macro,
+        muros_scalp=_m("scalping"), muros_swing=_m("swing"), muros_macro=_m("posicional"),
+        niveles_dia=resultado_ticker.get("niveles_dia"),
+    )
+
+
 # ══════════════════════════════════════════════════════
 # 💸 BUSCADOR DE CALLS BARATOS (CAPITAL PEQUEÑO)
 # ══════════════════════════════════════════════════════
