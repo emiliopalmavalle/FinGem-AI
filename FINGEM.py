@@ -1355,7 +1355,21 @@ if tipo_mercado == "🎯 Radar de Opciones (Score Quant)":
             prog.progress(100, text="Análisis completado.")
 
         status_box.empty()
-        mostrar_salud_datos_lista(lista_radar)
+        # Resultado en session_state: el selector "Ver gráfico detallado" y el
+        # botón de Telegram provocan un rerun, el botón del escaneo vuelve a
+        # False y sin esto la pantalla completa se borraba tras cada interacción
+        st.session_state["_radar_scan"] = {
+            "df_quant": df_quant, "df_swing": df_swing, "fig_gamma": fig_gamma,
+            "reporte_ia": reporte_ia, "raw": raw, "contexto": contexto_macro,
+            "lista": lista_radar,
+        }
+
+    _scan = st.session_state.get("_radar_scan")
+    if _scan:
+        df_quant, df_swing  = _scan["df_quant"], _scan["df_swing"]
+        fig_gamma, reporte_ia = _scan["fig_gamma"], _scan["reporte_ia"]
+        raw, contexto_macro = _scan["raw"], _scan["contexto"]
+        mostrar_salud_datos_lista(_scan["lista"])
 
         if df_quant.empty and df_swing.empty:
             st.warning("⚠️ No se obtuvieron datos de opciones. Verifica que los tickers tengan opciones listadas.")
