@@ -12,6 +12,8 @@ Estrategia de llamadas a Yahoo Finance (minimiza latencia):
   el activo ya pasó un filtro técnico.
 """
 
+import time
+
 import yfinance as yf
 import pandas as pd
 import warnings
@@ -309,6 +311,30 @@ def procesar_un_ticker(ticker: str) -> Optional[dict]:
         return None
 
 
+def _screen_con_reintentos(consulta, size: int, intentos: int = 3) -> list[str]:
+    """Ejecuta yf.screen con reintentos y backoff (2s, 4s).
+
+    En Streamlit Cloud, Yahoo devuelve 429 con frecuencia porque la IP
+    del contenedor es compartida. Un solo intento hacía que el screener
+    "no arrojara resultados" de forma intermitente; con 2 reintentos
+    espaciados casi siempre pasa. Si aun así falla, devuelve lista vacía
+    (la UI ya muestra el aviso de reintentar).
+    """
+    for intento in range(intentos):
+        try:
+            respuesta = yf.screen(
+                consulta, sortField='dayvolume', sortAsc=False, size=size
+            )
+            simbolos = [q['symbol'] for q in respuesta.get('quotes', []) if q.get('symbol')]
+            if simbolos:
+                return simbolos
+        except Exception:
+            pass
+        if intento < intentos - 1:
+            time.sleep(2 * (intento + 1))
+    return []
+
+
 def buscar_joyas_ocultas(max_resultados: int = 25) -> list[str]:
     """Búsqueda profunda de "joyas ocultas" con el screener nativo de Yahoo.
 
@@ -320,20 +346,14 @@ def buscar_joyas_ocultas(max_resultados: int = 25) -> list[str]:
     Returns:
         Lista de símbolos ordenados por volumen (vacía si Yahoo falla).
     """
-    try:
-        consulta = yf.EquityQuery('and', [
-            yf.EquityQuery('lt', ['peratio.lasttwelvemonths', 20]),
-            yf.EquityQuery('gt', ['epsgrowth.lasttwelvemonths', 0]),
-            yf.EquityQuery('gt', ['dayvolume', 500_000]),
-            yf.EquityQuery('gt', ['intradayprice', 5]),
-            yf.EquityQuery('is-in', ['exchange', 'NMS', 'NYQ']),
-        ])
-        respuesta = yf.screen(
-            consulta, sortField='dayvolume', sortAsc=False, size=max_resultados
-        )
-        return [q['symbol'] for q in respuesta.get('quotes', []) if q.get('symbol')]
-    except Exception:
-        return []
+    consulta = yf.EquityQuery('and', [
+        yf.EquityQuery('lt', ['peratio.lasttwelvemonths', 20]),
+        yf.EquityQuery('gt', ['epsgrowth.lasttwelvemonths', 0]),
+        yf.EquityQuery('gt', ['dayvolume', 500_000]),
+        yf.EquityQuery('gt', ['intradayprice', 5]),
+        yf.EquityQuery('is-in', ['exchange', 'NMS', 'NYQ']),
+    ])
+    return _screen_con_reintentos(consulta, size=max_resultados)
 
 
 def buscar_universo_bmv(max_resultados: int = 30) -> list[str]:
@@ -347,18 +367,12 @@ def buscar_universo_bmv(max_resultados: int = 30) -> list[str]:
     Returns:
         Lista de símbolos .MX (vacía si Yahoo falla).
     """
-    try:
-        consulta = yf.EquityQuery('and', [
-            yf.EquityQuery('eq', ['region', 'mx']),
-            yf.EquityQuery('gt', ['dayvolume', 100_000]),
-            yf.EquityQuery('gt', ['intradayprice', 5]),
-        ])
-        respuesta = yf.screen(
-            consulta, sortField='dayvolume', sortAsc=False, size=max_resultados
-        )
-        return [q['symbol'] for q in respuesta.get('quotes', []) if q.get('symbol')]
-    except Exception:
-        return []
+    consulta = yf.EquityQuery('and', [
+        yf.EquityQuery('eq', ['region', 'mx']),
+        yf.EquityQuery('gt', ['dayvolume', 100_000]),
+        yf.EquityQuery('gt', ['intradayprice', 5]),
+    ])
+    return _screen_con_reintentos(consulta, size=max_resultados)
 
 
 def buscar_universo_flujo(
@@ -390,20 +404,14 @@ def buscar_universo_flujo(
     Returns:
         Lista de símbolos ordenados por volumen (vacía si Yahoo falla).
     """
-    try:
-        consulta = yf.EquityQuery('and', [
-            yf.EquityQuery('gt', ['dayvolume', volumen_min]),
-            yf.EquityQuery('gt', ['intradayprice', precio_min]),
-            yf.EquityQuery('lt', ['intradayprice', precio_max]),
-            yf.EquityQuery('gt', ['percentchange', cambio_min]),
-            yf.EquityQuery('is-in', ['exchange', 'NMS', 'NYQ']),  # solo NASDAQ/NYSE, evita OTC
-        ])
-        respuesta = yf.screen(
-            consulta, sortField='dayvolume', sortAsc=False, size=max_resultados
-        )
-        return [q['symbol'] for q in respuesta.get('quotes', []) if q.get('symbol')]
-    except Exception:
-        return []
+    consulta = yf.EquityQuery('and', [
+        yf.EquityQuery('gt', ['dayvolume', volumen_min]),
+        yf.EquityQuery('gt', ['intradayprice', precio_min]),
+        yf.EquityQuery('lt', ['intradayprice', precio_max]),
+        yf.EquityQuery('gt', ['percentchange', cambio_min]),
+        yf.EquityQuery('is-in', ['exchange', 'NMS', 'NYQ']),  # solo NASDAQ/NYSE, evita OTC
+    ])
+    return _screen_con_reintentos(consulta, size=max_resultados)
 
 
 def escaneo_institucional_dual(
