@@ -29,7 +29,7 @@ import streamlit as st
 from modules.gemini_client import llamar_gemini, _generar_fallback
 
 MODELO_CLAUDE = "claude-opus-5"  # mismo precio que 4.8 ($5/$25 MTok), conocimiento hasta may-2026
-MAX_TOKENS_CLAUDE = 8000  # los reportes son ≤450 palabras; deja aire para thinking
+MAX_TOKENS_CLAUDE = 16000  # límite duro de thinking + texto; Opus 5 piensa más que 4.8 y solo se cobra lo usado
 
 # ── Configuración inyectada desde el orquestador (FINGEM.py)
 _config = {"claude_key": "", "gemini_key": ""}
@@ -84,6 +84,11 @@ def _llamar_claude(prompt: str) -> str:
 
     if respuesta.stop_reason == "refusal":
         raise RuntimeError("Claude rechazó la solicitud (safety)")
+    if respuesta.stop_reason == "max_tokens":
+        # Truncado = sin el bloque ```json final → extraer_plan() devolvería
+        # None y el plan se saltaría validar_plan() en silencio. Mejor fallar
+        # aquí y que el pipeline caiga a Gemini.
+        raise RuntimeError("Respuesta truncada por max_tokens")
 
     texto = next((b.text for b in respuesta.content if b.type == "text"), "")
     if not texto:
@@ -97,9 +102,14 @@ def _claude_disponible() -> bool:
 
 
 def _marcar_claude_no_disponible(motivo: str) -> None:
-    """Desactiva Claude por el resto de la sesión (sin créditos / key inválida)."""
+    """Desactiva Claude por el resto de la sesión (sin créditos / key inválida).
+
+    Solo marca session_state — sin st.warning aquí: esta función corre dentro
+    de una función @st.cache_data y Streamlit re-emite los elementos estáticos
+    en cada cache hit, así que el aviso reaparecería aunque Claude ya funcione.
+    El sidebar (mostrar_estado_ia_sidebar) ya comunica este estado.
+    """
     st.session_state[_KEY_CLAUDE_OFF] = motivo
-    st.warning(f"⚠️ Claude no disponible ({motivo}). Usando Gemini como respaldo.")
 
 
 # ══════════════════════════════════════════════════════
@@ -146,6 +156,8 @@ def _generar_cacheado(prompt: str, dia_cache: str) -> tuple[str, str, str]:
                 pass  # 429/5xx tras los retries del SDK → caer a Gemini
             except anthropic.APIConnectionError:
                 pass  # sin red hacia Anthropic → caer a Gemini
+            except RuntimeError:
+                pass  # refusal / truncado por max_tokens / respuesta vacía → caer a Gemini
         except ImportError:
             _marcar_claude_no_disponible("paquete 'anthropic' no instalado")
 
