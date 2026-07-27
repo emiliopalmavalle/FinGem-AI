@@ -28,7 +28,7 @@ import streamlit as st
 
 from modules.gemini_client import llamar_gemini, _generar_fallback
 
-MODELO_CLAUDE = "claude-opus-4-8"
+MODELO_CLAUDE = "claude-opus-5"  # mismo precio que 4.8 ($5/$25 MTok), conocimiento hasta may-2026
 MAX_TOKENS_CLAUDE = 8000  # los reportes son ≤450 palabras; deja aire para thinking
 
 # ── Configuración inyectada desde el orquestador (FINGEM.py)
@@ -169,7 +169,7 @@ def _generar_cacheado(prompt: str, dia_cache: str) -> tuple[str, str, str]:
 def _etiqueta_modelo(proveedor: str) -> str:
     """Nombre legible del modelo que generó la respuesta."""
     if proveedor == "claude":
-        return f"Claude Opus 4.8 (Anthropic · {MODELO_CLAUDE})"
+        return f"Claude Opus 5 (Anthropic · {MODELO_CLAUDE})"
     if proveedor == "gemini":
         modelo = st.session_state.get("_gemini_modelo_usado", "gemini-2.5-flash")
         return f"Gemini (Google · {modelo})"
@@ -179,7 +179,7 @@ def _etiqueta_modelo(proveedor: str) -> str:
 def proveedor_activo() -> str:
     """Nombre corto del proveedor que atenderá la próxima llamada (para spinners)."""
     if _claude_disponible():
-        return "Claude Opus 4.8"
+        return "Claude Opus 5"
     if _config["gemini_key"]:
         return "Gemini"
     return "el motor local"
