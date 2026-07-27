@@ -215,7 +215,7 @@ def analizar_con_gemini(
         "precio": precio_actual,
         "razones": [datos_extra[:80]] if datos_extra else [],
     }
-    return llamar_ia(prompt, contexto_fallback=ctx)
+    return llamar_ia(prompt, contexto_fallback=ctx, origen="individual")
 
 
 # ==========================================

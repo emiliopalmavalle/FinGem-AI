@@ -999,7 +999,7 @@ Maximo 450 palabras. Niveles numericos exactos. Sin frases genericas.
         "pcr":    scores_quant.get("scalping", {}).get("pcr", 1.0) if scores_quant.get("scalping") else 1.0,
         "iv_avg": scores_quant.get("scalping", {}).get("iv_avg", 30) if scores_quant.get("scalping") else 30,
     }
-    return llamar_ia(prompt, contexto_fallback=ctx_fallback)
+    return llamar_ia(prompt, contexto_fallback=ctx_fallback, origen="radar")
 
 
 # ══════════════════════════════════════════════════════

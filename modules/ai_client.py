@@ -38,10 +38,20 @@ _lock = threading.Lock()
 # ── Claves de session_state
 _KEY_CLAUDE_OFF = "_claude_no_disponible"   # créditos agotados / auth inválida
 _KEY_CONTADORES = "_ia_contadores"          # {"claude": n, "gemini": n}
+_KEY_THINKING   = "_ia_thinking_stats"      # {origen: {llamadas, thinking, salida}}
 
 
 class _ProveedoresAgotadosError(Exception):
     """Ningún proveedor de IA pudo responder."""
+
+
+class _ClaudeNoUtilizable(RuntimeError):
+    """Respuesta de Claude inservible: refusal, vacía o truncada por max_tokens.
+
+    Excepción propia (no RuntimeError genérico) para que _generar_cacheado
+    caiga a Gemini SOLO en estos casos — un RuntimeError real de otra parte
+    del stack sigue explotando, como debe hacerlo un bug genuino.
+    """
 
 
 def configurar_ia(claude_api_key: str = "", gemini_api_key: str = "") -> None:
@@ -62,15 +72,34 @@ def _incrementar(proveedor: str) -> None:
         st.session_state[_KEY_CONTADORES][proveedor] += 1
 
 
+def _registrar_thinking(origen: str, thinking: int, salida: int) -> None:
+    """Acumula el gasto de thinking por tipo de análisis (solo llamadas reales).
+
+    Con la distribución real por origen se puede decidir con datos propios
+    si bajar effort a medium en los radares vale la pena — en vez de
+    adivinarlo. Vive en session_state: es observabilidad, no telemetría.
+    """
+    with _lock:
+        stats = st.session_state.setdefault(_KEY_THINKING, {})
+        s = stats.setdefault(origen, {"llamadas": 0, "thinking": 0, "salida": 0})
+        s["llamadas"] += 1
+        s["thinking"] += thinking
+        s["salida"] += salida
+
+
 # ══════════════════════════════════════════════════════
 # PROVEEDOR 1: CLAUDE
 # ══════════════════════════════════════════════════════
 
-def _llamar_claude(prompt: str) -> str:
-    """Llamada a Claude. Lanza excepción si falla (el caller decide el fallback).
+def _llamar_claude(prompt: str) -> tuple[str, int, int]:
+    """Llamada a Claude. Lanza _ClaudeNoUtilizable si la respuesta no sirve.
 
     El SDK de Anthropic ya reintenta 429/5xx con backoff (max_retries=2),
     así que no duplicamos lógica de retry aquí.
+
+    Returns:
+        (texto, thinking_tokens, output_tokens) — el desglose de thinking
+        viene de usage.output_tokens_details (Opus 5).
     """
     import anthropic
 
@@ -83,18 +112,22 @@ def _llamar_claude(prompt: str) -> str:
     )
 
     if respuesta.stop_reason == "refusal":
-        raise RuntimeError("Claude rechazó la solicitud (safety)")
+        raise _ClaudeNoUtilizable("Claude rechazó la solicitud (safety)")
     if respuesta.stop_reason == "max_tokens":
         # Truncado = sin el bloque ```json final → extraer_plan() devolvería
         # None y el plan se saltaría validar_plan() en silencio. Mejor fallar
         # aquí y que el pipeline caiga a Gemini.
-        raise RuntimeError("Respuesta truncada por max_tokens")
+        raise _ClaudeNoUtilizable("Respuesta truncada por max_tokens")
 
     texto = next((b.text for b in respuesta.content if b.type == "text"), "")
     if not texto:
-        raise RuntimeError("Claude devolvió respuesta vacía")
+        raise _ClaudeNoUtilizable("Claude devolvió respuesta vacía")
+
+    detalles = getattr(respuesta.usage, "output_tokens_details", None)
+    thinking = getattr(detalles, "thinking_tokens", 0) or 0
     # Solo el $ pegado a cifras (no rompe bloques de código ni texto legítimo)
-    return re.sub(r"\$(?=\s?\d)", "USD ", texto)
+    texto = re.sub(r"\$(?=\s?\d)", "USD ", texto)
+    return texto, thinking, respuesta.usage.output_tokens
 
 
 def _claude_disponible() -> bool:
@@ -121,7 +154,7 @@ _MARCADORES_FALLO_GEMINI = ("❌", "⚠️")
 
 
 @st.cache_data(ttl=60 * 60 * 24, max_entries=200, show_spinner=False)
-def _generar_cacheado(prompt: str, dia_cache: str) -> tuple[str, str, str]:
+def _generar_cacheado(prompt: str, dia_cache: str, origen: str) -> tuple[str, str, str]:
     """Intenta Claude y luego Gemini. Cachea la primera respuesta real.
 
     dia_cache (fecha de hoy) forma parte de la clave: un análisis nunca
@@ -140,8 +173,9 @@ def _generar_cacheado(prompt: str, dia_cache: str) -> tuple[str, str, str]:
         try:
             import anthropic
             try:
-                texto = _llamar_claude(prompt)
+                texto, thinking, salida = _llamar_claude(prompt)
                 _incrementar("claude")
+                _registrar_thinking(origen, thinking, salida)
                 return texto, "claude", ts_generacion
             except anthropic.AuthenticationError:
                 _marcar_claude_no_disponible("API key inválida")
@@ -156,7 +190,7 @@ def _generar_cacheado(prompt: str, dia_cache: str) -> tuple[str, str, str]:
                 pass  # 429/5xx tras los retries del SDK → caer a Gemini
             except anthropic.APIConnectionError:
                 pass  # sin red hacia Anthropic → caer a Gemini
-            except RuntimeError:
+            except _ClaudeNoUtilizable:
                 pass  # refusal / truncado por max_tokens / respuesta vacía → caer a Gemini
         except ImportError:
             _marcar_claude_no_disponible("paquete 'anthropic' no instalado")
@@ -197,7 +231,8 @@ def proveedor_activo() -> str:
     return "el motor local"
 
 
-def llamar_ia(prompt: str, contexto_fallback: dict | None = None) -> str:
+def llamar_ia(prompt: str, contexto_fallback: dict | None = None,
+              origen: str = "general") -> str:
     """Punto de entrada único para toda la IA de la terminal.
 
     Toda respuesta de IA real se encabeza con la línea de autoría
@@ -207,6 +242,8 @@ def llamar_ia(prompt: str, contexto_fallback: dict | None = None) -> str:
     Args:
         prompt: texto completo del prompt.
         contexto_fallback: datos para el reporte local si toda la IA falla.
+        origen: etiqueta del tipo de análisis (individual/radar/derivados)
+            para las estadísticas de thinking del sidebar.
 
     Returns:
         Respuesta de Claude, Gemini o el reporte local estructurado.
@@ -215,7 +252,7 @@ def llamar_ia(prompt: str, contexto_fallback: dict | None = None) -> str:
         return "❌ No hay API keys de IA configuradas (ANTHROPIC_API_KEY / GEMINI_API_KEY)."
 
     try:
-        texto, proveedor, ts = _generar_cacheado(prompt, date.today().isoformat())
+        texto, proveedor, ts = _generar_cacheado(prompt, date.today().isoformat(), origen)
         return (f"🧠 *Análisis generado por: {_etiqueta_modelo(proveedor)} · {ts}*\n\n{texto}")
     except _ProveedoresAgotadosError:
         # El reporte local ya se anuncia a sí mismo en su encabezado
@@ -243,3 +280,14 @@ def mostrar_estado_ia_sidebar() -> None:
             f"🔢 Requests esta sesión — Claude: {contadores['claude']} · "
             f"Gemini: {contadores['gemini']}"
         )
+
+    # Distribución de thinking por tipo de análisis (solo llamadas reales a
+    # Claude). Sirve para decidir con datos si bajar effort donde no aporta.
+    stats = st.session_state.get(_KEY_THINKING, {})
+    if stats:
+        lineas = []
+        for origen, s in sorted(stats.items()):
+            prom_think = s["thinking"] // max(s["llamadas"], 1)
+            prom_total = s["salida"] // max(s["llamadas"], 1)
+            lineas.append(f"{origen}: {prom_think:,} thinking / {prom_total:,} total (×{s['llamadas']})")
+        st.sidebar.caption("🧠 Tokens promedio por análisis — " + " · ".join(lineas))

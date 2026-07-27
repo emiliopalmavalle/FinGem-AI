@@ -83,7 +83,7 @@ def analizar_muros_con_ia(
     """
 
     ctx = {"ticker": ticker, "precio": precio}
-    return llamar_ia(prompt, contexto_fallback=ctx)
+    return llamar_ia(prompt, contexto_fallback=ctx, origen="derivados")
 
 
 # ==========================================
